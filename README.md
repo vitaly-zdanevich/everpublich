@@ -1,5 +1,17 @@
 # Everpublich: sync Evernote notebook to a static blog, like postach.io and notesrss.com
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=coverage)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=bugs)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Duplicated Lines](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Maintainability](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Reliability](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Security](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
+
 Everpublich is a free MVP test pilot that turns an [Evernote](https://evernote.com/) notebook into a fast static [Zola](https://www.getzola.org/) website. It is inspired by [Postach.io](https://postach.io/) and [NotesRSS](https://notesrss.com/), but the output is a plain static site hosted from S3 behind a CDN, with a GitHub backup option.
 
 I use Evernote from 2009 and love it.
