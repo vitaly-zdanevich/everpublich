@@ -35,8 +35,8 @@ impl AppConfig {
 				.unwrap_or_else(|_| "everpublich.example".to_string()),
 			admin_secret: std::env::var("EVERPUBLICH_ADMIN_SECRET")
 				.unwrap_or_else(|_| "development-admin-secret-change-me".to_string()),
-			evernote_consumer_key: std::env::var("EVERNOTE_CONSUMER_KEY").ok(),
-			evernote_consumer_secret: std::env::var("EVERNOTE_CONSUMER_SECRET").ok(),
+			evernote_consumer_key: non_empty_env("EVERNOTE_CONSUMER_KEY"),
+			evernote_consumer_secret: non_empty_env("EVERNOTE_CONSUMER_SECRET"),
 			support_email: std::env::var("SUPPORT_EMAIL")
 				.unwrap_or_else(|_| "zdanevich.vitaly@ya.ru".to_string()),
 			support_telegram: std::env::var("SUPPORT_TELEGRAM")
@@ -46,6 +46,13 @@ impl AppConfig {
 			}),
 		}
 	}
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+	std::env::var(name)
+		.ok()
+		.map(|value| value.trim().to_string())
+		.filter(|value| !value.is_empty())
 }
 
 /// Minimal HTTP response for the Lambda adapter.
@@ -122,7 +129,7 @@ fn connect(body: &str, cfg: &AppConfig) -> Result<AppResponse> {
 	let req = serde_json::from_str::<ConnectRequest>(body).context("invalid connect request")?;
 	let _settings = initial_settings(&req.site_name, &cfg.base_domain)?;
 
-	if cfg.evernote_consumer_key.is_none() || cfg.evernote_consumer_secret.is_none() {
+	if is_blank(&cfg.evernote_consumer_key) || is_blank(&cfg.evernote_consumer_secret) {
 		return Ok(AppResponse::error(
 			503,
 			"Evernote OAuth is not configured on the server yet.",
@@ -132,6 +139,14 @@ fn connect(body: &str, cfg: &AppConfig) -> Result<AppResponse> {
 		501,
 		"Evernote OAuth start is not implemented yet. The website can be queued only after successful OAuth.",
 	))
+}
+
+fn is_blank(value: &Option<String>) -> bool {
+	value
+		.as_deref()
+		.map(str::trim)
+		.unwrap_or_default()
+		.is_empty()
 }
 
 fn landing_html(cfg: &AppConfig) -> String {
@@ -224,6 +239,29 @@ mod tests {
 			"Evernote OAuth is not configured on the server yet."
 		);
 		assert!(json["website_url"].is_null());
+	}
+
+	#[test]
+	fn connect_treats_empty_oauth_credentials_as_missing() {
+		let cfg = AppConfig {
+			evernote_consumer_key: Some(String::new()),
+			evernote_consumer_secret: Some(" ".into()),
+			..cfg()
+		};
+		let response = route(
+			"POST",
+			"/api/connect",
+			r#"{"site_name":"My Notebook"}"#,
+			&cfg,
+		)
+		.unwrap();
+		let json: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+
+		assert_eq!(response.status, 503);
+		assert_eq!(
+			json["error"],
+			"Evernote OAuth is not configured on the server yet."
+		);
 	}
 
 	#[test]
