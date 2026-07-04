@@ -31,7 +31,7 @@ def replacements() -> dict[str, str]:
 	"""Return template replacements for Pages-hosted HTML."""
 	return {
 		'__API_BASE_URL__': env('EVERPUBLICH_PAGES_API_BASE_URL', DEFAULT_API_BASE_URL),
-		'__BASE_DOMAIN__': env('EVERPUBLICH_PAGES_BASE_DOMAIN', 'everpublich.example'),
+		'__BASE_DOMAIN__': env('EVERPUBLICH_PAGES_BASE_DOMAIN', 'everpublich.xyz'),
 		'__README_HTML__': read_readme_html(),
 		'__SUPPORT_EMAIL__': env('SUPPORT_EMAIL', 'zdanevich.vitaly@ya.ru'),
 		'__SUPPORT_TELEGRAM__': env('SUPPORT_TELEGRAM', 'https://t.me/vitaly_zdanevich'),
