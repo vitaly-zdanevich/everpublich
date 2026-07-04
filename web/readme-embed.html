@@ -16,6 +16,7 @@
 <p>Everpublich asks for Evernote OAuth access, reads one selected notebook, and fully regenerates the user website once per day. The generated site has RSS, `sitemap.xml`, static search, tag pages, an About page, a calendar, media playback, and a podcast feed for notes tagged `podcast`.</p>
 <p>The default home page shows full posts. A per-user DynamoDB preference can switch the home page to titles only. Preferences live in the DynamoDB user item, one item per SaaS user.</p>
 <p>The landing page has one primary action: “Connect Evernote notebook read-only to make a website from it”. The form asks for a website name, returns the future website URL, stores an admin token in the browser, and shows a spinner while the first build downloads notes and builds the site.</p>
+<p>The project landing/admin shell is published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. The connect button calls the deployed AWS Lambda Function URL for OAuth and API work. Generated user websites are still hosted in S3 behind CloudFront.</p>
 <h2>Architecture</h2>
 <pre><code>
 flowchart TD
@@ -159,6 +160,10 @@ zola --root build/mock-site serve
 <p>• `scripts/update-code.sh` updates Lambda code without changing Terraform-managed resources.</p>
 <p>• `scripts/show-logs.sh` reads recent CloudWatch logs.</p>
 <p>• `scripts/embed_readme.py` embeds README text into the landing page during CI.</p>
+<p>• `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.</p>
+<p>CI publishes GitHub Pages on pushes to `main`. Optional repository variables:</p>
+<p>• `EVERPUBLICH_PAGES_API_BASE_URL` - deployed Lambda Function URL used by the connect/admin browser calls.</p>
+<p>• `EVERPUBLICH_PAGES_BASE_DOMAIN` - domain shown in the landing page subdomain hint.</p>
 <p>CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.properties` points SonarCloud at that report.</p>
 <h2>Documentation links</h2>
 <p>• [Evernote developer documentation](https://dev.evernote.com/doc/)</p>

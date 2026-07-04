@@ -8,6 +8,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   ZOLA_VERSION: v0.22.1
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,6 +26,8 @@ jobs:
           zola --version
       - name: Embed README
         run: python scripts/embed_readme.py README.md web/readme-embed.html
+      - name: Build GitHub Pages artifact
+        run: python scripts/build_pages.py
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -39,3 +44,37 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --document-private-items
+
+  pages:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Embed README
+        run: python scripts/embed_readme.py README.md web/readme-embed.html
+      - name: Build GitHub Pages artifact
+        env:
+          EVERPUBLICH_PAGES_API_BASE_URL: ${{ vars.EVERPUBLICH_PAGES_API_BASE_URL }}
+          EVERPUBLICH_PAGES_BASE_DOMAIN: ${{ vars.EVERPUBLICH_PAGES_BASE_DOMAIN }}
+        run: python scripts/build_pages.py
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

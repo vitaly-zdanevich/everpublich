@@ -145,12 +145,14 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 fn landing_html(cfg: &AppConfig) -> String {
 	include_str!("../web/index.html")
+		.replace("__API_BASE_URL__", "")
 		.replace("__BASE_DOMAIN__", &cfg.base_domain)
 		.replace("__README_HTML__", include_str!("../web/readme-embed.html"))
 }
 
 fn admin_html(cfg: &AppConfig) -> String {
 	include_str!("../web/admin.html")
+		.replace("__API_BASE_URL__", "")
 		.replace("__SUPPORT_EMAIL__", &cfg.support_email)
 		.replace("__SUPPORT_TELEGRAM__", &cfg.support_telegram)
 		.replace("__SUPPORT_TICKETS__", &cfg.support_tickets)
@@ -193,11 +195,24 @@ mod tests {
 		let response = route("GET", "/", "", &cfg()).unwrap();
 
 		assert_eq!(response.status, 200);
+		assert!(!response.body.contains("__API_BASE_URL__"));
+		assert!(response.body.contains("data-api-base-url=''"));
 		assert!(
 			response
 				.body
 				.contains("Connect Evernote notebook read-only to make a website from it")
 		);
+	}
+
+	#[test]
+	fn admin_html_uses_same_origin_api_and_support_links() {
+		let response = route("GET", "/admin.html", "", &cfg()).unwrap();
+
+		assert_eq!(response.status, 200);
+		assert!(!response.body.contains("__API_BASE_URL__"));
+		assert!(response.body.contains("data-api-base-url=''"));
+		assert!(response.body.contains("mailto:support@example.com"));
+		assert!(response.body.contains("https://t.me/support"));
 	}
 
 	#[test]

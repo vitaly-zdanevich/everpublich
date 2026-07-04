@@ -24,6 +24,8 @@ The default home page shows full posts. A per-user DynamoDB preference can switc
 
 The landing page has one primary action: “Connect Evernote notebook read-only to make a website from it”. The form asks for a website name, returns the future website URL, stores an admin token in the browser, and shows a spinner while the first build downloads notes and builds the site.
 
+The project landing/admin shell is published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. The connect button calls the deployed AWS Lambda Function URL for OAuth and API work. Generated user websites are still hosted in S3 behind CloudFront.
+
 ## Architecture
 
 ```mermaid
@@ -211,6 +213,12 @@ Scripts:
 - `scripts/update-code.sh` updates Lambda code without changing Terraform-managed resources.
 - `scripts/show-logs.sh` reads recent CloudWatch logs.
 - `scripts/embed_readme.py` embeds README text into the landing page during CI.
+- `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
+
+CI publishes GitHub Pages on pushes to `main`. Optional repository variables:
+
+- `EVERPUBLICH_PAGES_API_BASE_URL` - deployed Lambda Function URL used by the connect/admin browser calls.
+- `EVERPUBLICH_PAGES_BASE_DOMAIN` - domain shown in the landing page subdomain hint.
 
 CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.properties` points SonarCloud at that report.
 

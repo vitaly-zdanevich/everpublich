@@ -1,8 +1,10 @@
 /target/
 /build/
 /coverage/
+/dist/
 /.tools/
 /.terraform/
 infra/.terraform/
+infra/terraform.tfvars
 infra/terraform.tfstate*
 *.tfplan

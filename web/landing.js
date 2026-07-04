@@ -1,6 +1,7 @@
 const connectForm = document.getElementById('connect-form');
 const status = document.getElementById('connect-status');
 const statusText = status.querySelector('[data-status-text]');
+const apiBaseUrl = document.documentElement.dataset.apiBaseUrl.replace(/\/$/, '');
 
 connectForm.addEventListener('submit', async function (event) {
 	event.preventDefault();
@@ -8,7 +9,7 @@ connectForm.addEventListener('submit', async function (event) {
 	statusText.textContent = 'Connecting to Evernote...';
 
 	const formData = new FormData(connectForm);
-	const response = await fetch('/api/connect', {
+	const response = await fetch(apiBaseUrl + '/api/connect', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ site_name: formData.get('site_name') }),

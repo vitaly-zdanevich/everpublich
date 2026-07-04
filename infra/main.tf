@@ -255,6 +255,13 @@ resource "aws_lambda_function" "api" {
 resource "aws_lambda_function_url" "api" {
   function_name      = aws_lambda_function.api.function_name
   authorization_type = "NONE"
+
+  cors {
+    allow_headers = ["authorization", "content-type"]
+    allow_methods = ["GET", "POST"]
+    allow_origins = ["*"]
+    max_age       = 86400
+  }
 }
 
 resource "aws_cloudwatch_log_group" "worker" {
