@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang='en'>
+<head>
+	<meta charset='utf-8'>
+	<meta name='viewport' content='width=device-width, initial-scale=1'>
+	<title>Everpublich admin</title>
+	<link rel='stylesheet' href='/app.css'>
+</head>
+<body>
+	<header class='topbar'>
+		<a class='brand' href='/'>Everpublich</a>
+		<nav>
+			<a href='/'>Home</a>
+			<a href='/pricing'>Pricing</a>
+		</nav>
+	</header>
+
+	<main class='admin-layout'>
+		<section class='admin-panel'>
+			<h1>Site settings</h1>
+			<form id='settings-form' class='settings-form'>
+				<label>Site name <input name='site_name' placeholder='My Evernote blog'></label>
+				<label>Home page
+					<select name='index_mode'>
+						<option value='full_posts'>Full posts</option>
+						<option value='titles_only'>Titles only</option>
+					</select>
+				</label>
+				<label>Search
+					<select name='search_mode'>
+						<option value='zola_static'>Zola static search</option>
+						<option value='google'>Google</option>
+						<option value='none'>None</option>
+					</select>
+				</label>
+				<label>GitHub backup
+					<select name='github_visibility'>
+						<option value='private'>Private repository</option>
+						<option value='public'>Public repository</option>
+					</select>
+				</label>
+				<label>Zola theme <input name='zola_theme' placeholder='optional theme name'></label>
+				<label>Google Analytics <input name='google_analytics_id' placeholder='G-...'></label>
+				<label>Yandex Metrica <input name='yandex_metrica_id' placeholder='counter ID'></label>
+				<label class='checkbox'><input name='expand_widgets' type='checkbox' checked> Expand supported links to widgets</label>
+				<button type='submit'>Save settings</button>
+			</form>
+			<p class='warning'>GitHub backup is useful because git stores every version. If you accidentally publish something private, you may also need to fix git history. You can write to Vitaly for help.</p>
+			<button id='remove-account' class='danger' type='button'>Remove account</button>
+		</section>
+
+		<aside class='support'>
+			<h2>Support</h2>
+			<p>Email: <a href='mailto:__SUPPORT_EMAIL__'>__SUPPORT_EMAIL__</a></p>
+			<p>Telegram: <a href='__SUPPORT_TELEGRAM__'>__SUPPORT_TELEGRAM__</a></p>
+			<p>Tickets: <a href='__SUPPORT_TICKETS__'>GitHub issues</a></p>
+		</aside>
+	</main>
+
+	<script type='module' src='/admin.js'></script>
+</body>
+</html>

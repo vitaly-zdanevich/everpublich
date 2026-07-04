@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang='en'>
+<head>
+	<meta charset='utf-8'>
+	<meta name='viewport' content='width=device-width, initial-scale=1'>
+	<title>Everpublich</title>
+	<meta name='description' content='Sync an Evernote notebook to a static Zola blog.'>
+	<link rel='stylesheet' href='/app.css'>
+</head>
+<body>
+	<header class='topbar'>
+		<a class='brand' href='/'>Everpublich</a>
+		<nav>
+			<a href='#features'>Features</a>
+			<a href='#readme'>README</a>
+			<a href='/pricing'>Pricing</a>
+			<a href='/admin'>Admin</a>
+		</nav>
+	</header>
+
+	<main>
+		<section class='hero'>
+			<div class='hero-copy'>
+				<p class='eyebrow'>Free MVP test pilot</p>
+				<h1>Everpublich</h1>
+				<p class='lead'>Sync an Evernote notebook to a static Zola blog with RSS, tags, search, a calendar, podcast feed, media playback, and S3 plus CDN hosting.</p>
+				<form id='connect-form' class='connect-form'>
+					<label for='site-name'>Website name</label>
+					<div class='connect-row'>
+						<input id='site-name' name='site_name' minlength='3' placeholder='my-evernote-blog' required>
+						<button type='submit'>Connect Evernote notebook read-only to make a website from it</button>
+					</div>
+					<p class='hint'>Your site will use a subdomain under __BASE_DOMAIN__.</p>
+				</form>
+				<div id='connect-status' class='status' hidden>
+					<span class='spinner' aria-hidden='true'></span>
+					<span data-status-text>Preparing OAuth...</span>
+				</div>
+			</div>
+		</section>
+
+		<section id='features' class='band'>
+			<h2>What ships in the MVP</h2>
+			<ul class='feature-grid'>
+				<li>Daily full regeneration, one Lambda per user.</li>
+				<li>Zola static search enabled by default, with Google search as a setting.</li>
+				<li>Images, audio, video, and attachments copied from Evernote and served from S3/CDN.</li>
+				<li>RSS, sitemap.xml, tag pages, About page, calendar, and podcast.xml for notes tagged <code>podcast</code>.</li>
+				<li>Optional GitHub backup repository with public/private visibility.</li>
+				<li>Mobile-friendly design with true black dark mode via <code>prefers-color-scheme</code>.</li>
+			</ul>
+		</section>
+
+		<section id='readme' class='band readme'>
+			<h2>README</h2>
+			<div class='readme-body'>__README_HTML__</div>
+		</section>
+	</main>
+
+	<script type='module' src='/landing.js'></script>
+</body>
+</html>

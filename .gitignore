@@ -1,0 +1,8 @@
+/target/
+/build/
+/coverage/
+/.tools/
+/.terraform/
+infra/.terraform/
+infra/terraform.tfstate*
+*.tfplan

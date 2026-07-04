@@ -1,0 +1,17 @@
+aws_region    = "us-east-1"
+project_name  = "everpublich"
+base_domain   = "everpublich.example"
+token_secret  = "change-me-to-at-least-32-characters"
+admin_secret  = "change-me-admin-session-secret"
+
+# If your DNS is outside AWS, keep this empty and create records at your DNS provider.
+route53_zone_id = ""
+
+# Optional: ACM certificate ARN in us-east-1 for everpublich.example and *.everpublich.example.
+acm_certificate_arn = ""
+
+builder_users = {
+  demo = {
+    subdomain = "demo"
+  }
+}
