@@ -4,12 +4,9 @@
 //! small JSON API. Production persistence is provided by DynamoDB in Terraform;
 //! the core route behavior stays testable here without AWS credentials.
 
-use crate::admin::{ConnectRequest, ConnectResponse, initial_settings};
-use crate::auth;
-use crate::models::UserItem;
+use crate::admin::{ConnectRequest, initial_settings};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 /// Runtime configuration loaded from Lambda environment variables.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +17,8 @@ pub struct AppConfig {
 	pub admin_secret: String,
 	/// Evernote OAuth consumer key.
 	pub evernote_consumer_key: Option<String>,
+	/// Evernote OAuth consumer secret.
+	pub evernote_consumer_secret: Option<String>,
 	/// Support email shown in the admin panel.
 	pub support_email: String,
 	/// Support Telegram URL.
@@ -37,6 +36,7 @@ impl AppConfig {
 			admin_secret: std::env::var("EVERPUBLICH_ADMIN_SECRET")
 				.unwrap_or_else(|_| "development-admin-secret-change-me".to_string()),
 			evernote_consumer_key: std::env::var("EVERNOTE_CONSUMER_KEY").ok(),
+			evernote_consumer_secret: std::env::var("EVERNOTE_CONSUMER_SECRET").ok(),
 			support_email: std::env::var("SUPPORT_EMAIL")
 				.unwrap_or_else(|_| "zdanevich.vitaly@ya.ru".to_string()),
 			support_telegram: std::env::var("SUPPORT_TELEGRAM")
@@ -120,27 +120,18 @@ pub fn route(method: &str, path: &str, body: &str, cfg: &AppConfig) -> Result<Ap
 
 fn connect(body: &str, cfg: &AppConfig) -> Result<AppResponse> {
 	let req = serde_json::from_str::<ConnectRequest>(body).context("invalid connect request")?;
-	let settings = initial_settings(&req.site_name, &cfg.base_domain)?;
-	let user_id = deterministic_user_id(&settings.site_name);
-	let fake_evernote_token = format!("pending-oauth-{user_id}");
-	let admin_token = auth::session_token(&user_id, &fake_evernote_token, &cfg.admin_secret)?;
-	let user = UserItem::new(user_id.clone(), settings);
-	let response = ConnectResponse {
-		admin_token,
-		user_id,
-		website_url: user.settings.base_url,
-		message: "Check after a few minutes while notes download and the website builds.".into(),
-	};
-	AppResponse::json(&response)
-}
+	let _settings = initial_settings(&req.site_name, &cfg.base_domain)?;
 
-fn deterministic_user_id(site_name: &str) -> String {
-	let digest = Sha256::digest(site_name.as_bytes());
-	hex_bytes(&digest[..8])
-}
-
-fn hex_bytes(bytes: &[u8]) -> String {
-	bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+	if cfg.evernote_consumer_key.is_none() || cfg.evernote_consumer_secret.is_none() {
+		return Ok(AppResponse::error(
+			503,
+			"Evernote OAuth is not configured on the server yet.",
+		));
+	}
+	Ok(AppResponse::error(
+		501,
+		"Evernote OAuth start is not implemented yet. The website can be queued only after successful OAuth.",
+	))
 }
 
 fn landing_html(cfg: &AppConfig) -> String {
@@ -184,6 +175,7 @@ mod tests {
 			base_domain: "everpublich.example".into(),
 			admin_secret: "secret".into(),
 			evernote_consumer_key: None,
+			evernote_consumer_secret: None,
 			support_email: "support@example.com".into(),
 			support_telegram: "https://t.me/support".into(),
 			support_tickets: "https://github.com/example/issues".into(),
@@ -216,7 +208,7 @@ mod tests {
 	}
 
 	#[test]
-	fn connect_returns_admin_token_and_url() {
+	fn connect_requires_oauth_configuration() {
 		let response = route(
 			"POST",
 			"/api/connect",
@@ -226,10 +218,35 @@ mod tests {
 		.unwrap();
 		let json: serde_json::Value = serde_json::from_str(&response.body).unwrap();
 
+		assert_eq!(response.status, 503);
 		assert_eq!(
-			json["website_url"],
-			"https://my-notebook.everpublich.example/"
+			json["error"],
+			"Evernote OAuth is not configured on the server yet."
 		);
-		assert!(json["admin_token"].as_str().unwrap().starts_with("adm1."));
+		assert!(json["website_url"].is_null());
+	}
+
+	#[test]
+	fn connect_does_not_queue_before_oauth() {
+		let cfg = AppConfig {
+			evernote_consumer_key: Some("key".into()),
+			evernote_consumer_secret: Some("secret".into()),
+			..cfg()
+		};
+		let response = route(
+			"POST",
+			"/api/connect",
+			r#"{"site_name":"My Notebook"}"#,
+			&cfg,
+		)
+		.unwrap();
+		let json: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+
+		assert_eq!(response.status, 501);
+		assert_eq!(
+			json["error"],
+			"Evernote OAuth start is not implemented yet. The website can be queued only after successful OAuth."
+		);
+		assert!(json["admin_token"].is_null());
 	}
 }

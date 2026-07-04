@@ -19,6 +19,10 @@ connectForm.addEventListener('submit', async function (event) {
 		statusText.textContent = json.error || 'Connection failed';
 		return;
 	}
+	if (!json.admin_token || !json.website_url) {
+		statusText.textContent = json.message || 'Evernote OAuth did not complete yet.';
+		return;
+	}
 	localStorage.setItem('everpublich_admin_token', json.admin_token);
 	localStorage.setItem('everpublich_user_id', json.user_id);
 	statusText.innerHTML = 'Website queued: <a href=\'' + json.website_url + '\'>' + json.website_url + '</a>. Check after a few minutes while notes download and the site builds.';

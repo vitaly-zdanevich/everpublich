@@ -107,6 +107,12 @@ h2 {
 	color: var(--muted);
 }
 
+.lead-note {
+	max-width: 700px;
+	color: var(--muted);
+	font-size: 1.05rem;
+}
+
 .connect-form {
 	margin-top: 28px;
 }
