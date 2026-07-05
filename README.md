@@ -140,7 +140,6 @@ A $5/month SaaS can work if the product solves backup, publishing, and ownership
 Feature ideas:
 
 - Import from Evernote export files (`.enex`) for users who do not want OAuth.
-- One-click migration from Postach.io and NotesRSS.
 - Custom domain setup wizard.
 - Search engine indexing diagnostics.
 - Private site mode with password or signed URLs.
