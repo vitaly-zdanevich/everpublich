@@ -3,6 +3,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use everpublich::evernote::{notes_to_posts, utc};
+use everpublich::evernote_api::{
+	DEFAULT_USER_STORE_URL, EvernoteApiClient, LinkedNotebookFailure, LinkedNotebookProbe,
+	LinkedNotebookSummary,
+};
 use everpublich::models::{BuildState, EvernoteAccessMode, Note, Resource, SiteSettings, UserItem};
 use everpublich::zola::write_zola_site;
 use std::path::PathBuf;
@@ -25,6 +29,21 @@ enum Command {
 		#[arg(long, default_value = "everpublich.example")]
 		base_domain: String,
 	},
+	/// Probe notebooks shared to the token owner's Evernote account.
+	EvernoteSharedNotebooks {
+		/// Developer token for the account that receives shared notebooks.
+		#[arg(long, env = "EVERNOTE_DEVELOPER_TOKEN", hide_env_values = true)]
+		token: String,
+		/// Evernote UserStore URL.
+		#[arg(long, default_value = DEFAULT_USER_STORE_URL)]
+		user_store_url: String,
+		/// Optional NoteStore URL when you already know the shard endpoint.
+		#[arg(long)]
+		note_store_url: Option<String>,
+		/// Number of note metadata rows to fetch from each shared notebook.
+		#[arg(long, default_value_t = 5)]
+		max_sample_notes: i32,
+	},
 }
 
 fn main() -> Result<()> {
@@ -34,7 +53,76 @@ fn main() -> Result<()> {
 			output,
 			base_domain,
 		} => mock_site(output, &base_domain),
+		Command::EvernoteSharedNotebooks {
+			token,
+			user_store_url,
+			note_store_url,
+			max_sample_notes,
+		} => evernote_shared_notebooks(token, user_store_url, note_store_url, max_sample_notes),
 	}
+}
+
+fn evernote_shared_notebooks(
+	token: String,
+	user_store_url: String,
+	note_store_url: Option<String>,
+	max_sample_notes: i32,
+) -> Result<()> {
+	let client = EvernoteApiClient::new(token, Some(user_store_url), note_store_url)?;
+	let probes = client.linked_notebook_probes(max_sample_notes)?;
+	println!("Found {} linked/shared notebooks", probes.len());
+	for probe in probes {
+		match probe {
+			LinkedNotebookProbe::Accessible(notebook) => print_linked_notebook(&notebook),
+			LinkedNotebookProbe::Failed(failure) => print_failed_linked_notebook(&failure),
+		}
+	}
+	Ok(())
+}
+
+fn print_linked_notebook(notebook: &LinkedNotebookSummary) {
+	let name = notebook.share_name.as_deref().unwrap_or("(unnamed)");
+	let owner = notebook
+		.owner_username
+		.as_deref()
+		.unwrap_or("(unknown owner)");
+	let privilege = notebook
+		.privilege
+		.as_deref()
+		.unwrap_or("(unknown privilege)");
+	println!("- {name}");
+	println!("  owner: {owner}");
+	println!("  notebook_guid: {}", notebook.notebook_guid);
+	println!("  privilege: {privilege}");
+	println!("  notebook_modifiable: {}", notebook.notebook_modifiable);
+	println!("  total_notes: {}", notebook.total_notes);
+	if notebook.sample_notes.is_empty() {
+		println!("  sample_notes: none");
+	} else {
+		println!("  sample_notes:");
+		for note in &notebook.sample_notes {
+			let title = note.title.as_deref().unwrap_or("(untitled)");
+			println!("    - {title} [{}]", note.guid);
+		}
+	}
+}
+
+fn print_failed_linked_notebook(failure: &LinkedNotebookFailure) {
+	let name = failure.share_name.as_deref().unwrap_or("(unnamed)");
+	let owner = failure
+		.owner_username
+		.as_deref()
+		.unwrap_or("(unknown owner)");
+	println!("- {name}");
+	println!("  owner: {owner}");
+	println!("  status: failed");
+	println!(
+		"  has_shared_notebook_global_id: {}",
+		failure.has_shared_notebook_global_id
+	);
+	println!("  has_uri: {}", failure.has_uri);
+	println!("  has_note_store_url: {}", failure.has_note_store_url);
+	println!("  error: {}", failure.error);
 }
 
 fn mock_site(output: PathBuf, base_domain: &str) -> Result<()> {
