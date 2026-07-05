@@ -2,8 +2,7 @@
 //!
 //! Evernote's public documentation still describes OAuth 1.0a. This module only
 //! builds signed OAuth URLs and transforms already-fetched notes. Network calls
-//! are intentionally isolated for the Lambda adapter so tests do not need
-//! Evernote credentials.
+//! stay outside this module so tests do not need Evernote credentials.
 
 use crate::enml::enml_to_zola_body;
 use crate::models::{Note, Post, PostKind};
@@ -65,7 +64,7 @@ pub struct OAuthCredentials {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Request parameters that change for each temporary-token request.
 pub struct OAuthTemporaryRequest {
-	/// OAuth callback URL configured for the Lambda endpoint.
+	/// OAuth callback URL configured for the backend endpoint.
 	pub callback_url: String,
 	/// OAuth nonce for this request.
 	pub nonce: String,

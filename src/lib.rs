@@ -13,7 +13,6 @@ pub mod enml;
 pub mod evernote;
 pub mod evernote_api;
 pub mod github;
-pub mod lambda_app;
 pub mod models;
 pub mod slug;
 pub mod store;
