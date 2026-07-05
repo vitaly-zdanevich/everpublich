@@ -24,7 +24,7 @@ The current MVP avoids Evernote OAuth because Evernote no longer issues legacy A
 
 User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media live on the same VM under nginx. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
 
-The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. Its “Connect Evernote notebook read-only to make a website from it” button should call the VM API. The form asks for a website name, stores a signed admin token in the browser, and shows a spinner while the first build syncs notes and builds the site.
+The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. For the free MVP, it asks users to share a notebook read-only with `everpublich@proton.me`; Everpublich will email the generated website link after the first sync.
 
 ## Architecture
 

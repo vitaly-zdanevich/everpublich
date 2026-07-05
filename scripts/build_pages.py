@@ -64,7 +64,7 @@ def main() -> int:
 	values = replacements()
 	for name in ('index.html', 'admin.html', 'pricing.html'):
 		render_template(name, values)
-	for name in ('app.css', 'landing.js', 'admin.js', 'favicon.svg'):
+	for name in ('app.css', 'admin.js', 'favicon.svg'):
 		copy_asset(name)
 
 	(OUTPUT / '.nojekyll').write_text('', encoding='utf-8')

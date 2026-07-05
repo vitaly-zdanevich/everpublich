@@ -112,26 +112,20 @@ h2 {
 	font-size: 1.05rem;
 }
 
-.connect-form {
+.publish-card {
 	margin-top: 28px;
+	border-radius: 6px;
+	padding: 18px;
+	background: var(--panel-strong);
+	border: 1px solid var(--line);
 }
 
-.connect-form label,
-.settings-form label {
-	display: grid;
-	gap: 6px;
-	font-weight: 650;
+.publish-card p {
+	margin: 0;
 }
 
-.connect-row {
-	display: grid;
-	grid-template-columns: minmax(220px, 1fr) auto;
-	gap: 10px;
+.publish-card p + p {
 	margin-top: 8px;
-}
-
-.connect-row button {
-	color: #000000;
 }
 
 input,
@@ -164,36 +158,16 @@ button:disabled {
 	opacity: .7;
 }
 
+.settings-form label {
+	display: grid;
+	gap: 6px;
+	font-weight: 650;
+}
+
 .hint,
 .warning {
 	color: var(--muted);
 	font-size: .95rem;
-}
-
-.status {
-	display: flex;
-	gap: 10px;
-	align-items: center;
-	margin-top: 16px;
-	padding: 12px;
-	background: var(--panel-strong);
-	border: 1px solid var(--line);
-	border-radius: 8px;
-}
-
-.spinner {
-	width: 20px;
-	height: 20px;
-	border: 3px solid var(--line);
-	border-top-color: var(--accent);
-	border-radius: 50%;
-	animation: spin .8s linear infinite;
-}
-
-@keyframes spin {
-	to {
-		transform: rotate(360deg);
-	}
 }
 
 .band {
@@ -256,7 +230,6 @@ button:disabled {
 		margin-left: 0;
 	}
 
-	.connect-row,
 	.admin-layout {
 		grid-template-columns: 1fr;
 	}
