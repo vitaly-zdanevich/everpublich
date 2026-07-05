@@ -1,0 +1,325 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+bootcmd:
+  - [ mkdir, -p, /etc/everpublich, /opt/everpublich/app, /opt/everpublich/bin, /opt/everpublich/share, /var/www/everpublich/landing ]
+
+packages:
+  - brotli
+  - build-essential
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - nginx
+  - pkg-config
+  - sqlite3
+  - unzip
+  - xz-utils
+  - zstd
+
+write_files:
+  - path: /etc/everpublich/everpublich.env
+    owner: root:root
+    permissions: '0644'
+    content: |
+      EVERPUBLICH_BASE_DOMAIN='${base_domain}'
+      EVERPUBLICH_SQLITE_PATH='/var/lib/everpublich/db/everpublich.sqlite'
+      EVERPUBLICH_SITES_DIR='/var/www/everpublich/sites'
+      EVERPUBLICH_LANDING_DIR='/var/www/everpublich/landing'
+      EVERPUBLICH_EVERNOTE_CONFIG_DIR='/var/lib/everpublich/.config/Evernote'
+      EVERPUBLICH_EVERNOTE_APPIMAGE='/opt/everpublich/app/Evernote.AppImage'
+      EVERPUBLICH_CACHE_DIR='/var/cache/everpublich'
+      EVERPUBLICH_SUPPORT_EMAIL='${support_email}'
+      EVERPUBLICH_SUPPORT_TELEGRAM='${support_telegram}'
+      EVERPUBLICH_SUPPORT_TICKETS='${support_tickets}'
+      RUST_LOG='everpublich=info'
+  - path: /opt/everpublich/share/sqlite-schema.sql
+    owner: root:root
+    permissions: '0644'
+    encoding: b64
+    content: ${sqlite_schema_b64}
+  - path: /opt/everpublich/bin/everpublich-sync
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      . /etc/everpublich/everpublich.env
+
+      if [ ! -x /opt/everpublich/bin/everpublich-cli ]; then
+      	echo 'everpublich-cli is not installed yet. Run scripts/update-code.sh after the first Terraform deploy.'
+      	exit 0
+      fi
+
+      if /opt/everpublich/bin/everpublich-cli --help | grep -q 'rebuild-all'; then
+      	exec /opt/everpublich/bin/everpublich-cli rebuild-all \
+      		--database "$EVERPUBLICH_SQLITE_PATH" \
+      		--evernote-config-dir "$EVERPUBLICH_EVERNOTE_CONFIG_DIR" \
+      		--sites-dir "$EVERPUBLICH_SITES_DIR"
+      fi
+
+      echo 'The VM is ready, but the Evernote SQLite rebuild command is not implemented yet.'
+  - path: /opt/everpublich/bin/install-evernote-appimage
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      repo='${evernote_appimage_repo}'
+      asset_regex='${evernote_appimage_regex}'
+      api_url="https://api.github.com/repos/$repo/releases/latest"
+      work_dir="$(mktemp -d)"
+      release_json="$work_dir/release.json"
+      app_dir='/opt/everpublich/app'
+
+      cleanup() {
+      	rm -rf "$work_dir"
+      }
+      trap cleanup EXIT
+
+      mkdir -p "$app_dir"
+      curl -fsSL -H 'Accept: application/vnd.github+json' "$api_url" -o "$release_json"
+
+      asset_name="$(jq -r --arg regex "$asset_regex" '.assets[] | select(.name | test($regex)) | .name' "$release_json" | head -n 1)"
+      asset_url="$(jq -r --arg regex "$asset_regex" '.assets[] | select(.name | test($regex)) | .browser_download_url' "$release_json" | head -n 1)"
+      tag_name="$(jq -r '.tag_name' "$release_json")"
+
+      if [ -z "$asset_name" ] || [ -z "$asset_url" ] || [ "$asset_name" = 'null' ] || [ "$asset_url" = 'null' ]; then
+      	echo "No Evernote AppImage asset matched regex: $asset_regex" >&2
+      	exit 1
+      fi
+
+      curl -fL "$asset_url" -o "$work_dir/$asset_name"
+
+      sha_url="$(jq -r '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url' "$release_json" | head -n 1)"
+      if [ -n "$sha_url" ] && [ "$sha_url" != 'null' ]; then
+      	curl -fsSL "$sha_url" -o "$work_dir/SHA256SUMS"
+      	if grep -F "  $asset_name" "$work_dir/SHA256SUMS" > "$work_dir/SHA256SUMS.selected"; then
+      		(cd "$work_dir" && sha256sum -c SHA256SUMS.selected)
+      	else
+      		echo "SHA256SUMS did not include $asset_name; continuing without checksum verification" >&2
+      	fi
+      fi
+
+      install -o root -g root -m 0755 "$work_dir/$asset_name" "$app_dir/Evernote.AppImage"
+      {
+      	printf "EVERNOTE_APPIMAGE_REPOSITORY='%s'\n" "$repo"
+      	printf "EVERNOTE_APPIMAGE_TAG='%s'\n" "$tag_name"
+      	printf "EVERNOTE_APPIMAGE_ASSET='%s'\n" "$asset_name"
+      	printf "EVERNOTE_APPIMAGE_URL='%s'\n" "$asset_url"
+      } > "$app_dir/installed-release.env"
+      chown -R root:root "$app_dir"
+      echo "Installed $asset_name from $tag_name"
+  - path: /opt/everpublich/bin/evernote-run
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      export HOME='/var/lib/everpublich'
+      export XDG_CONFIG_HOME="$HOME/.config"
+      export XDG_CACHE_HOME='/var/cache/everpublich/xdg-cache'
+      export XDG_DATA_HOME="$HOME/.local/share"
+      export XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/everpublich}"
+      export DISPLAY="$${DISPLAY:-:99}"
+
+      mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$HOME/.config/Evernote"
+
+      if [ ! -x /opt/everpublich/app/Evernote.AppImage ]; then
+      	echo 'Evernote AppImage is not installed at /opt/everpublich/app/Evernote.AppImage' >&2
+      	exit 1
+      fi
+
+      if [ "$DISPLAY" = ':99' ]; then
+      	if ! pgrep -u "$(id -u)" -f "Xvfb $DISPLAY" >/dev/null; then
+      		Xvfb "$DISPLAY" -screen 0 1600x1000x24 -nolisten tcp &
+      		sleep 2
+      	fi
+
+      	if command -v openbox >/dev/null && ! pgrep -u "$(id -u)" -x openbox >/dev/null; then
+      		openbox >/var/cache/everpublich/openbox.log 2>&1 &
+      	fi
+      fi
+
+      exec dbus-run-session -- bash -lc '
+      	if command -v gnome-keyring-daemon >/dev/null && ! pgrep -u "$(id -u)" -x gnome-keyring-daemon >/dev/null; then
+      		eval "$(gnome-keyring-daemon --start --components=secrets)"
+      		export GNOME_KEYRING_CONTROL
+      	fi
+      	exec /opt/everpublich/app/Evernote.AppImage --no-sandbox
+      '
+  - path: /opt/everpublich/bin/evernote-run-ssh-x
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      if [ -z "$${DISPLAY:-}" ]; then
+      	echo 'SSH X forwarding is not active. Reconnect with: ssh -Y ubuntu@VM_PUBLIC_IP' >&2
+      	exit 2
+      fi
+
+      if ! command -v xauth >/dev/null; then
+      	echo 'xauth is not installed on the VM' >&2
+      	exit 2
+      fi
+
+      sudo systemctl stop evernote-client.service || true
+      sudo install -d -o everpublich -g everpublich -m 0700 /run/everpublich
+      sudo install -o everpublich -g everpublich -m 0600 /dev/null /run/everpublich/ssh-xauthority
+
+      if ! xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' | sudo -H -u everpublich env XAUTHORITY=/run/everpublich/ssh-xauthority xauth nmerge -; then
+      	echo 'Failed to copy the SSH X forwarding cookie for the everpublich user' >&2
+      	exit 1
+      fi
+
+      sudo -H -u everpublich env \
+      	DISPLAY="$DISPLAY" \
+      	XAUTHORITY=/run/everpublich/ssh-xauthority \
+      	XDG_RUNTIME_DIR=/run/everpublich \
+      	/opt/everpublich/bin/evernote-run
+  - path: /opt/everpublich/bin/evernote-auth-help
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      cat <<'EOF'
+      To authenticate Evernote through SSH X forwarding:
+
+      1. Connect from your workstation with trusted X forwarding:
+         ssh -Y ubuntu@VM_PUBLIC_IP
+
+      2. Run the client in the forwarded X session:
+         /opt/everpublich/bin/evernote-run-ssh-x
+
+      3. Log in to Evernote, close the window, then restart background sync:
+         sudo systemctl start evernote-client.service
+
+      Evernote itself keeps the session under /var/lib/everpublich/.config/Evernote.
+      EOF
+  - path: /etc/systemd/system/evernote-client.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Evernote desktop client for Everpublich notebook sync
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=everpublich
+      Group=everpublich
+      EnvironmentFile=/etc/everpublich/everpublich.env
+      Environment=DISPLAY=:99
+      Environment=XDG_RUNTIME_DIR=/run/everpublich
+      RuntimeDirectory=everpublich
+      RuntimeDirectoryMode=0700
+      ExecStart=/opt/everpublich/bin/evernote-run
+      Restart=always
+      RestartSec=20
+  - path: /etc/systemd/system/everpublich-sync.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Everpublich full static site regeneration
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      User=everpublich
+      Group=everpublich
+      EnvironmentFile=/etc/everpublich/everpublich.env
+      ExecStart=/opt/everpublich/bin/everpublich-sync
+      Nice=5
+      IOSchedulingClass=best-effort
+  - path: /etc/systemd/system/everpublich-sync.timer
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Run Everpublich full regeneration once per day
+
+      [Timer]
+      OnCalendar=*-*-* 03:17:00
+      Persistent=true
+      RandomizedDelaySec=30m
+      Unit=everpublich-sync.service
+
+      [Install]
+      WantedBy=timers.target
+  - path: /etc/nginx/sites-available/everpublich
+    owner: root:root
+    permissions: '0644'
+    content: |
+      map $host $everpublich_site_root {
+      	default /var/www/everpublich/landing;
+      	~^(?<site_slug>[^.]+)\.${base_domain_regex}$ /var/www/everpublich/sites/$site_slug/public;
+      }
+
+      server {
+      	listen 80 default_server;
+      	listen [::]:80 default_server;
+      	server_name _ ${base_domain} *.${base_domain};
+
+      	root $everpublich_site_root;
+      	index index.html;
+
+      	gzip on;
+      	gzip_comp_level 6;
+      	gzip_min_length 1024;
+      	gzip_types text/plain text/css text/xml application/javascript application/json application/xml image/svg+xml;
+      	gzip_static on;
+
+      	location / {
+      		try_files $uri $uri/ /index.html =404;
+      	}
+      }
+  - path: /var/www/everpublich/landing/index.html
+    owner: root:root
+    permissions: '0644'
+    content: |
+      <!doctype html>
+      <html lang='en'>
+      	<head>
+      		<meta charset='utf-8'>
+      		<meta name='viewport' content='width=device-width, initial-scale=1'>
+      		<title>Everpublich</title>
+      		<style>
+      			:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      			body { margin: 0; padding: 4rem 1.5rem; background: Canvas; color: CanvasText; }
+      			main { max-width: 42rem; margin: 0 auto; }
+      			a { color: LinkText; }
+      		</style>
+      	</head>
+      	<body>
+      		<main>
+      			<h1>Everpublich</h1>
+      			<p>The Oracle Cloud ARM VM is ready. Deploy the Rust service and connect the landing page API next.</p>
+      			<p>Generated sites will be served from per-user subdomains under <code>${base_domain}</code>.</p>
+      		</main>
+      	</body>
+      </html>
+
+runcmd:
+  - [ bash, -lc, 'id -u everpublich >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/everpublich --shell /bin/bash everpublich' ]
+  - [ bash, -lc, 'mkdir -p /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/repo /opt/everpublich/share /var/cache/everpublich /var/lib/everpublich/db /var/lib/everpublich/.config/Evernote /var/www/everpublich/landing /var/www/everpublich/sites' ]
+  - [ bash, -lc, 'sqlite3 /var/lib/everpublich/db/everpublich.sqlite < /opt/everpublich/share/sqlite-schema.sql' ]
+  - [ bash, -lc, 'chown -R root:root /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/share && chown -R everpublich:everpublich /opt/everpublich/repo /var/cache/everpublich /var/lib/everpublich /var/www/everpublich' ]
+  - [ bash, -lc, 'if ${install_evernote_gui_deps}; then apt-get install -y xvfb openbox dbus-x11 dbus-user-session gnome-keyring libsecret-1-0 libgtk-3-0 libnss3 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 xauth || true; apt-get install -y libasound2 libfuse2 || apt-get install -y libasound2t64 libfuse2t64 || true; fi' ]
+  - [ bash, -lc, 'if ${install_evernote_appimage}; then /opt/everpublich/bin/install-evernote-appimage; fi' ]
+  - [ bash, -lc, 'if ${install_rustup_on_boot}; then sudo -H -u everpublich bash -lc "if [ ! -x /var/lib/everpublich/.cargo/bin/cargo ]; then curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal; fi"; fi' ]
+  - [ bash, -lc, 'if ${install_zola_on_boot}; then curl -fsSL "https://github.com/getzola/zola/releases/download/v${zola_version}/zola-v${zola_version}-aarch64-unknown-linux-gnu.tar.gz" -o /tmp/zola.tar.gz && tar -xzf /tmp/zola.tar.gz -C /usr/local/bin zola && chmod 0755 /usr/local/bin/zola || echo "Zola install failed; install it manually from https://www.getzola.org/documentation/getting-started/installation/"; fi' ]
+  - [ bash, -lc, 'if [ ! -d /opt/everpublich/repo/.git ]; then sudo -H -u everpublich git clone --depth 1 "${repository_url}" /opt/everpublich/repo || true; fi' ]
+  - [ bash, -lc, 'ln -sfn /etc/nginx/sites-available/everpublich /etc/nginx/sites-enabled/everpublich && rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl enable --now nginx' ]
+  - [ bash, -lc, 'systemctl daemon-reload && if ${run_evernote_on_boot}; then systemctl enable --now evernote-client.service; else systemctl enable evernote-client.service; fi && systemctl enable --now everpublich-sync.timer' ]

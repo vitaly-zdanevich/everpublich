@@ -1,8 +1,8 @@
 //! Everpublich core library.
 //!
-//! The Lambda binaries are thin adapters around this crate. Keeping the
+//! The deploy adapters are thin wrappers around this crate. Keeping the
 //! publishing, token handling, widget expansion, and Zola generation here makes
-//! the risky behavior testable without AWS credentials.
+//! the risky behavior testable without cloud credentials.
 
 #![warn(missing_docs)]
 

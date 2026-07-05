@@ -131,7 +131,7 @@ fn mock_site(output: PathBuf, base_domain: &str) -> Result<()> {
 		user_id: "demo".into(),
 		registration_date: utc(1_700_000_000),
 		evernote_user_id: Some("demo".into()),
-		evernote_access_mode: EvernoteAccessMode::UserOauth,
+		evernote_access_mode: EvernoteAccessMode::SharedToServiceAccount,
 		evernote_token: None,
 		github_token: None,
 		settings,

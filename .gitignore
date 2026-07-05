@@ -3,8 +3,11 @@
 /coverage/
 /dist/
 /.tools/
+__pycache__/
+*.pyc
 /.terraform/
 infra/.terraform/
 infra/terraform.tfvars
 infra/terraform.tfstate*
+infra/*.tfstate*
 *.tfplan

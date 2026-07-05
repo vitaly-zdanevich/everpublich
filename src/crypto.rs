@@ -1,9 +1,9 @@
 //! Low-cost token encryption for the MVP.
 //!
-//! This intentionally avoids AWS KMS because the project starts as a free pilot.
+//! This intentionally avoids paid key-management services because the project starts as a free pilot.
 //! It uses AES-256-GCM from `ring`; the key is derived from the
 //! `EVERPUBLICH_TOKEN_SECRET` environment variable. Operationally this means the
-//! secret must be rotated like any other production secret, and leaked Lambda
+//! secret must be rotated like any other production secret, and leaked runtime
 //! environment variables can decrypt stored tokens.
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -35,7 +35,7 @@ impl TokenCipher {
 		})
 	}
 
-	/// Encrypt one token string for storage in DynamoDB.
+	/// Encrypt one token string for storage in SQLite.
 	pub fn encrypt(&self, plaintext: &str) -> Result<String> {
 		let mut nonce = [0u8; NONCE_LEN];
 		SystemRandom::new()

@@ -6,6 +6,10 @@ const apiBaseUrl = document.documentElement.dataset.apiBaseUrl.replace(/\/$/, ''
 connectForm.addEventListener('submit', async function (event) {
 	event.preventDefault();
 	status.hidden = false;
+	if (!apiBaseUrl) {
+		statusText.textContent = 'Everpublich VM API is not configured yet.';
+		return;
+	}
 	statusText.textContent = 'Connecting to Evernote...';
 
 	const formData = new FormData(connectForm);

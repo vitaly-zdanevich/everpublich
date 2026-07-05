@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = ROOT / 'web'
 OUTPUT = ROOT / 'dist' / 'pages'
 
-DEFAULT_API_BASE_URL = 'https://22hzyrvlzmc3jydadurwvk5ry40puoey.lambda-url.us-east-1.on.aws'
+DEFAULT_API_BASE_URL = ''
 
 
 def env(name: str, default: str) -> str:

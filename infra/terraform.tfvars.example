@@ -1,17 +1,29 @@
-aws_region    = "us-east-1"
-project_name  = "everpublich"
-base_domain   = "everpublich.example"
-token_secret  = "change-me-to-at-least-32-characters"
-admin_secret  = "change-me-admin-session-secret"
+tenancy_ocid     = "ocid1.tenancy.oc1..change-me"
+user_ocid        = "ocid1.user.oc1..change-me"
+fingerprint      = "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "eu-frankfurt-1"
+compartment_ocid = "ocid1.compartment.oc1..change-me"
 
-# If your DNS is outside AWS, keep this empty and create records at your DNS provider.
-route53_zone_id = ""
+project_name = "everpublich"
+base_domain  = "everpublich.xyz"
 
-# Optional: ACM certificate ARN in us-east-1 for everpublich.example and *.everpublich.example.
-acm_certificate_arn = ""
+# Choose an Always Free eligible Ubuntu AArch64 image from your OCI home region.
+instance_image_ocid = "ocid1.image.oc1..change-me"
 
-builder_users = {
-  demo = {
-    subdomain = "demo"
-  }
-}
+# OCI Always Free Ampere A1 resources are currently 2 OCPUs, 12 GB RAM,
+# and 200 GB total block storage. These defaults use the whole free ARM VM.
+instance_ocpus        = 2
+instance_memory_gb    = 12
+boot_volume_size_gb   = 200
+ssh_public_key_path   = "~/.ssh/id_ed25519.pub"
+allowed_ssh_cidrs     = ["0.0.0.0/0"]
+availability_domain_index = 0
+
+repository_url = "https://github.com/vitaly-zdanevich/everpublich.git"
+
+# Download the latest native ARM Evernote AppImage from Vitaly's repack releases.
+install_evernote_appimage_on_boot = true
+run_evernote_on_boot              = true
+evernote_appimage_repository      = "vitaly-zdanevich/evernote-linux-repackage"
+evernote_appimage_asset_regex     = "^Evernote-.*-aarch64\\.AppImage$"

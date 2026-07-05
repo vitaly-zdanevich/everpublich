@@ -2,6 +2,10 @@ const removeButton = document.getElementById('remove-account');
 const apiBaseUrl = document.documentElement.dataset.apiBaseUrl.replace(/\/$/, '');
 
 removeButton.addEventListener('click', async function () {
+	if (!apiBaseUrl) {
+		alert('Everpublich VM API is not configured yet.');
+		return;
+	}
 	if (!confirm('Remove this Everpublich account?')) {
 		return;
 	}

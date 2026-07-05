@@ -1,9 +1,9 @@
-//! Data structures stored in DynamoDB and passed through the build pipeline.
+//! Data structures stored in SQLite and passed through the build pipeline.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Stored OAuth token encrypted by [`crate::crypto::TokenCipher`].
+/// Stored secret encrypted by [`crate::crypto::TokenCipher`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedSecret {
 	/// Encryption algorithm and version marker.
@@ -29,7 +29,7 @@ impl EncryptedSecret {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvernoteAccessMode {
-	/// The user authorized an Evernote App Notebook or Full Access OAuth token.
+	/// Legacy path where a user authorized an Evernote App Notebook or Full Access OAuth token.
 	UserOauth,
 	/// The user shared a notebook read-only to the service Evernote account.
 	SharedToServiceAccount,
@@ -70,8 +70,7 @@ pub enum SearchMode {
 	None,
 }
 
-/// User-controlled website settings. The DynamoDB user item stores this as one
-/// nested object so admin updates stay atomic.
+/// User-controlled website settings stored for a generated site.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteSettings {
 	/// Website and optional GitHub repository name chosen by the user.
@@ -142,18 +141,18 @@ impl SiteSettings {
 	}
 }
 
-/// One DynamoDB item per SaaS user.
+/// One SaaS user stored in SQLite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserItem {
 	/// Stable service user ID.
 	pub user_id: String,
 	/// Registration timestamp stored for product and billing decisions.
 	pub registration_date: DateTime<Utc>,
-	/// Evernote account ID returned by OAuth, when available.
+	/// Evernote account ID returned by OAuth or inferred from cache data, when available.
 	pub evernote_user_id: Option<String>,
 	/// Evernote access path used for this account.
 	pub evernote_access_mode: EvernoteAccessMode,
-	/// Encrypted Evernote OAuth token.
+	/// Legacy encrypted Evernote OAuth token.
 	pub evernote_token: Option<EncryptedSecret>,
 	/// Encrypted GitHub OAuth token.
 	pub github_token: Option<EncryptedSecret>,
@@ -166,13 +165,13 @@ pub struct UserItem {
 }
 
 impl UserItem {
-	/// Create a new DynamoDB user item.
+	/// Create a new SQLite-backed user item.
 	pub fn new(user_id: impl Into<String>, settings: SiteSettings) -> Self {
 		Self {
 			user_id: user_id.into(),
 			registration_date: Utc::now(),
 			evernote_user_id: None,
-			evernote_access_mode: EvernoteAccessMode::UserOauth,
+			evernote_access_mode: EvernoteAccessMode::SharedToServiceAccount,
 			evernote_token: None,
 			github_token: None,
 			settings,
@@ -241,8 +240,8 @@ pub struct Note {
 	pub resources: Vec<Resource>,
 }
 
-/// Evernote resource metadata. The binary itself should be stored in S3 or a
-/// temporary build directory; Markdown references use `file_name`.
+/// Evernote resource metadata. The binary itself should be copied into the
+/// generated site or a temporary build directory; Markdown references use `file_name`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resource {
 	/// Evernote body hash used by `<en-media>`.
@@ -251,7 +250,7 @@ pub struct Resource {
 	pub file_name: String,
 	/// Resource MIME type.
 	pub mime: String,
-	/// Optional S3 key after upload.
+	/// Optional remote object key after upload or mirroring.
 	pub s3_key: Option<String>,
 }
 

@@ -23,7 +23,7 @@ pub struct GeneratedSite {
 }
 
 /// Write a complete Zola source tree. The caller should run `zola build` and
-/// sync `public/` to S3/CloudFront afterwards.
+/// serve `public/` with nginx or mirror it to GitHub afterwards.
 pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<GeneratedSite> {
 	fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
 	fs::create_dir_all(root.join("content/posts"))?;

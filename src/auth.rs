@@ -1,7 +1,7 @@
 //! Admin-session tokens derived from the Evernote OAuth token.
 //!
 //! The browser should not store the raw Evernote token. Instead, after OAuth the
-//! backend stores the encrypted Evernote token in DynamoDB and returns an
+//! backend stores the encrypted Evernote token in SQLite and returns an
 //! HMAC-signed session token. The admin panel sends that session token back.
 
 use anyhow::{Context, Result, bail};

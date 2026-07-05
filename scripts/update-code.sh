@@ -1,32 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
-PROJECT_NAME="${PROJECT_NAME:-everpublich}"
-API_ZIP="$ROOT_DIR/build/everpublich-lambda.zip"
-WORKER_ZIP="$ROOT_DIR/build/everpublich-worker.zip"
+SSH_HOST="${EVERPUBLICH_SSH_HOST:-${1:-}}"
+SSH_USER="${EVERPUBLICH_SSH_USER:-ubuntu}"
+SSH_KEY="${EVERPUBLICH_SSH_KEY:-}"
 
-"$ROOT_DIR/scripts/build-lambda.sh"
+if [[ -z "$SSH_HOST" ]]; then
+	echo 'Usage: EVERPUBLICH_SSH_HOST=PUBLIC_IP scripts/update-code.sh [PUBLIC_IP]' >&2
+	exit 2
+fi
 
-aws lambda update-function-code \
-	--region "$AWS_REGION" \
-	--function-name "${PROJECT_NAME}-api" \
-	--zip-file "fileb://$API_ZIP" \
-	>/dev/null
+ssh_args=()
+if [[ -n "$SSH_KEY" ]]; then
+	ssh_args=(-i "$SSH_KEY")
+fi
 
-aws lambda wait function-updated \
-	--region "$AWS_REGION" \
-	--function-name "${PROJECT_NAME}-api"
+ssh "${ssh_args[@]}" "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
 
-for function_name in $(aws lambda list-functions --region "$AWS_REGION" --query "Functions[?starts_with(FunctionName, '${PROJECT_NAME}-builder-')].FunctionName" --output text); do
-	aws lambda update-function-code \
-		--region "$AWS_REGION" \
-		--function-name "$function_name" \
-		--zip-file "fileb://$WORKER_ZIP" \
-		>/dev/null
-	aws lambda wait function-updated --region "$AWS_REGION" --function-name "$function_name"
-	echo "Updated $function_name"
-done
+sudo -H -u everpublich bash -lc '
+	set -euo pipefail
+	cd /opt/everpublich/repo
+	git pull --ff-only
+	if [ -f /var/lib/everpublich/.cargo/env ]; then
+		. /var/lib/everpublich/.cargo/env
+	fi
+	cargo build --release --bin everpublich-cli
+'
 
-echo "Updated ${PROJECT_NAME}-api and builder Lambdas in $AWS_REGION"
+sudo install -o root -g root -m 0755 \
+	/opt/everpublich/repo/target/release/everpublich-cli \
+	/opt/everpublich/bin/everpublich-cli
+
+sudo systemctl start everpublich-sync.service
+REMOTE

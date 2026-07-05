@@ -12,50 +12,56 @@
 [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
 [![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
 
-Everpublich is a free MVP test pilot that turns an [Evernote](https://evernote.com/) notebook into a fast static [Zola](https://www.getzola.org/) website. It is inspired by [Postach.io](https://postach.io/) and [NotesRSS](https://notesrss.com/), but the output is a plain static site hosted from S3 behind a CDN, with a GitHub backup option.
+Everpublich is a free MVP test pilot that turns an [Evernote](https://evernote.com/) notebook into a fast static [Zola](https://www.getzola.org/) blog or website. It aims to be a better version of [Postach.io](https://postach.io/) and [NotesRSS](https://notesrss.com/): RSS, tags, static search, calendar, podcast feed, media playback, expanded links-to-widgets, backup value, and generated static websites served from one Oracle Cloud ARM VM or mirrored to GitHub.
+
+Free during the test stage.
 
 I use Evernote from 2009 and love it.
 
 ## Product
 
-Everpublich asks for Evernote OAuth access, reads one selected notebook, and fully regenerates the user website once per day. The generated site has RSS, `sitemap.xml`, static search, tag pages, an About page, a calendar, media playback, and a podcast feed for notes tagged `podcast`.
+The current MVP avoids Evernote OAuth because Evernote no longer issues legacy API keys to new third-party services. Users share a notebook as read-only to the Everpublich service Evernote account. The official Evernote Linux client syncs that account on the VM, and Everpublich reads the client cache read-only to rebuild websites once per day.
 
-The default home page shows full posts. A per-user DynamoDB preference can switch the home page to titles only. Preferences live in the DynamoDB user item, one item per SaaS user.
+User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media live on the same VM under nginx. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
 
-The landing page has one primary action: “Connect Evernote notebook read-only to make a website from it”. The form asks for a website name, returns the future website URL, stores an admin token in the browser, and shows a spinner while the first build downloads notes and builds the site.
-
-The project landing/admin shell is published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. The connect button calls the deployed AWS Lambda Function URL for OAuth and API work. Generated user websites are still hosted in S3 behind CloudFront.
+The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. Its “Connect Evernote notebook read-only to make a website from it” button should call the VM API once the Rust server replaces the earlier Lambda adapter. The form asks for a website name, stores a signed admin token in the browser, and shows a spinner while the first build syncs notes and builds the site.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-	User[User browser] --> Landing[OAuth and admin Lambda]
-	Landing --> EvernoteOAuth[Evernote OAuth 1.0a]
-	Landing --> Users[(DynamoDB users)]
-	Landing --> GitHubOAuth[GitHub OAuth, optional backup]
-	EventBridge[EventBridge daily schedule] --> Worker[One builder Lambda per user]
-	Users --> Worker
-	Worker --> EvernoteAPI[Evernote notebook API]
-	Worker --> Zola[Zola source tree]
-	Zola --> S3[(S3 static site and media)]
-	S3 --> CloudFront[CloudFront CDN]
-	CloudFront --> Site[User static website]
-	Worker --> GitRepo[GitHub repo backup]
+	User[User browser] --> Landing[GitHub Pages landing and admin shell]
+	Landing --> VmApi[Rust API on Oracle ARM VM]
+	User --> Share[Share notebook read-only]
+	Share --> ServiceAccount[Everpublich service Evernote account]
+	ServiceAccount --> EvernoteClient[Official Evernote Linux client]
+	EvernoteClient --> EvernoteCache[(Evernote SQLite/cache files)]
+	VmApi --> Users[(SQLite users/settings)]
+	Timer[systemd daily timer] --> Builder[Rust full-regeneration worker]
+	Users --> Builder
+	EvernoteCache --> Builder
+	Builder --> Zola[Zola source tree]
+	Zola --> NginxRoot[/nginx static site root/]
+	NginxRoot --> Site[User static website]
+	Builder --> GitRepo[Optional GitHub repo backup]
 ```
 
 ## Evernote access
 
-Evernote’s developer documentation still describes OAuth 1.0a and expiring access tokens. API keys can be Basic, Full, or App Notebook. Basic access does not read existing notes; Full access reads and updates notes; App Notebook limits access to a single notebook while keeping full notebook permissions. For this product, the best path is App Notebook authorization when Evernote approves the API key.
+The official API path is blocked for new Evernote developers today, so the MVP uses a service account and shared notebooks:
 
-The alternative mode is also supported in the data model: a user shares a notebook read-only to the Everpublich service Evernote account, and the daily builder reads shared notebooks from that service account. This is attractive because the user does not need to grant a broad token, but it needs clear onboarding and testing against Evernote shared-notebook API behavior.
+- The user creates or chooses a notebook intended for publishing.
+- The user shares that notebook read-only to the Everpublich service Evernote account.
+- The official Evernote client syncs the shared notebook on the VM.
+- The Rust parser reads the local Evernote cache and SQLite files read-only.
 
-The browser does not store the raw Evernote token. The backend stores the token encrypted with AES-256-GCM using `EVERPUBLICH_TOKEN_SECRET`. This avoids paid AWS KMS during the pilot, but it means the Lambda environment secret must be protected. The browser receives a signed admin token derived from the current Evernote token fingerprint; rotating the Evernote token invalidates old admin sessions.
+Local inspection of the official Linux client shows SQLite databases under `~/.config/Evernote/conduit-storage/.../*.sql`, with note, notebook, tag, attachment, and offline search tables. Note bodies and resource data are also cached under `conduit-fs`. This is a private client storage format, so the parser must be defensive, tested against snapshots, and pinned to a known client version.
+
+The parser must never modify Evernote cache files. For reliable reads, it should copy SQLite databases to a temporary snapshot before querying, especially if the desktop client is running and using WAL files.
 
 ## Website features
 
 - Full static regeneration once per day.
-- One Lambda per user, scheduled with EventBridge.
 - [Zola](https://www.getzola.org/) site generation with `minify_html = true`.
 - Use any [Zola theme](https://www.getzola.org/themes/) or add custom CSS.
 - I can develop a custom visual theme for you.
@@ -73,7 +79,8 @@ The browser does not store the raw Evernote token. The backend stores the token 
 - Evernote formatting is preserved as HTML, including fonts, sizes, colors, and tables.
 - Optional Google Analytics and Yandex Metrica.
 - Mobile-friendly design with black dark mode via `prefers-color-scheme`.
-- Minimal JavaScript, static HTML, minified output, CDN delivery, and Brotli from CloudFront.
+- Offline support in the browser.
+- Minimal JavaScript, static HTML, minified output, gzip, precompressed assets, and an optional free CDN later through Cloudflare or another DNS/CDN provider.
 - Backup value: the generated site and optional GitHub repository become another copy of the Evernote notebook.
 
 ## Widget expansion
@@ -112,9 +119,18 @@ The admin panel can connect GitHub OAuth and switch backup repository visibility
 
 ## Subdomains
 
-Automatic per-user subdomains are feasible. The low-maintenance setup is a wildcard DNS record like `*.everpublich.example` pointing to CloudFront, then CloudFront rewrites the host to the user prefix in S3. If you register the TLD outside AWS, it can be cheaper than Route 53 registrar pricing. You can still use CloudFront and S3; just create DNS records at your registrar or DNS provider. If DNS is in Route 53, Terraform can create the wildcard record.
+Automatic per-user subdomains are feasible on the VM. After buying the TLD, create DNS records at any registrar or DNS provider:
 
-For production HTTPS on a custom wildcard domain, use an ACM certificate in `us-east-1` for `*.your-domain`. Terraform accepts `acm_certificate_arn` after you validate the certificate.
+- `A everpublich.xyz -> VM_PUBLIC_IP`
+- `A *.everpublich.xyz -> VM_PUBLIC_IP`
+
+Registering the TLD outside AWS can be cheaper than using Route 53 as a registrar. With the VM design, AWS is not required. Until the domain is bought, test with the VM public IP, a local hosts entry, or a request header:
+
+```sh
+curl -H 'Host: demo.everpublich.xyz' http://VM_PUBLIC_IP/
+```
+
+For production HTTPS, add Caddy, certbot, or a CDN such as Cloudflare after the domain exists.
 
 ## Similar products
 
@@ -128,18 +144,18 @@ For production HTTPS on a custom wildcard domain, use an ACM certificate in `us-
 Public market notes from the online check:
 
 - NotesRSS sells simplicity: write in Evernote and publish with a tag.
-- NotesRSS also highlights CDN hosting, which supports the Everpublich S3 plus CloudFront direction.
-- Evernote API access needs manual API-key approval and access justification.
+- NotesRSS also highlights CDN hosting, which supports adding Cloudflare later when the domain exists.
+- Evernote API access is the largest platform risk, so the service-account plus desktop-cache path is the practical MVP.
 - Evernote free-plan reductions create demand for backup and export-oriented tools.
-- I found limited current public review material for Postach.io/NotesRSS, so the product should include a fast feedback loop and author support links from day one.
+- I found limited current public review material for Postach.io and NotesRSS, so the product should include a fast feedback loop and author support links from day one.
 
 ## Startup feedback
 
-A $5/month SaaS can work if the product solves backup, publishing, and ownership better than a simple blog service. The risk is Evernote API approval and the smaller Evernote power-user market. The strongest MVP angle is not “blogging only”; it is “publish and back up an Evernote notebook as a fast static website”.
+A $5/month SaaS can work if the product solves backup, publishing, and ownership better than a simple blog service. The risk is Evernote platform access and the smaller Evernote power-user market. The strongest MVP angle is not “blogging only”; it is “publish and back up an Evernote notebook as a fast static website”.
 
 Feature ideas:
 
-- Import from Evernote export files (`.enex`) for users who do not want OAuth.
+- Import from Evernote export files (`.enex`) for users who do not want to share a notebook.
 - Custom domain setup wizard.
 - Search engine indexing diagnostics.
 - Private site mode with password or signed URLs.
@@ -158,7 +174,7 @@ Related startup ideas:
 - “Personal knowledge backup monitor” that checks Evernote, Notion, Google Drive, GitHub, and Telegram exports.
 - Static podcast generator from folders, notebooks, or YouTube playlists.
 - Hosted “about me” page that syncs from existing profiles and notes.
-- Small-business knowledge base from Notion/Evernote/Google Docs to static site.
+- Small-business knowledge base from Notion, Evernote, or Google Docs to static site.
 - Personal archive search across Evernote exports, Telegram exports, browser bookmarks, and local files.
 
 Notion is worth supporting later because the market is larger and website builders around Notion already proved demand. Evernote is a better first niche for you because you have long-term product intuition and related projects.
@@ -197,25 +213,45 @@ zola --root build/mock-site serve
 
 The end-to-end HTML test runs `zola build`, so install [Zola](https://www.getzola.org/documentation/getting-started/installation/) before `cargo test --all-targets`.
 
-## AWS deployment
+## Oracle Cloud ARM VM deployment
 
-Create `infra/terraform.tfvars` from `infra/terraform.tfvars.example`, then:
+The Terraform in `infra/` provisions one OCI Ampere A1 ARM VM, a VCN, a public subnet, HTTP/HTTPS/SSH security rules, nginx, SQLite, a daily systemd timer, and directories for the official Evernote client cache and generated websites.
+
+Oracle’s current Always Free documentation says Ampere A1 gives 2 OCPUs and 12 GB RAM total for Always Free tenancies, and the account has 200 GB total Always Free block storage. This repo defaults to one `VM.Standard.A1.Flex` instance using those free limits.
+
+Create `infra/terraform.tfvars` from `infra/terraform.tfvars.example`, set your OCI OCIDs and an Always Free eligible Ubuntu AArch64 image OCID, then:
 
 ```sh
 ./scripts/deploy.sh
 ```
 
+If OCI reports out of host capacity, try another `availability_domain_index` or retry later. Keep `region` set to your OCI home region for Always Free resources.
+
 Scripts:
 
-- `scripts/build-lambda.sh` builds `everpublich-lambda` and `everpublich-worker` for `aarch64-unknown-linux-gnu` with `RUST_TARGET_CPU=neoverse-n1`.
-- `scripts/deploy.sh` builds and applies Terraform.
-- `scripts/update-code.sh` updates Lambda code without changing Terraform-managed resources.
-- `scripts/show-logs.sh` reads recent CloudWatch logs.
+- `scripts/deploy.sh` runs Terraform for the Oracle Cloud VM.
+- `scripts/update-code.sh` SSHes into the VM, pulls the repo, builds `everpublich-cli` on ARM, installs it, and starts the sync service.
+- `scripts/show-logs.sh` reads `journalctl` logs for `everpublich-sync.service` over SSH.
 - `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
+
+Evernote AppImage login is interactive. After deployment, connect with SSH X forwarding, run the helper in your forwarded X session, log in once, then restart the background service:
+
+```sh
+ssh -Y ubuntu@VM_PUBLIC_IP
+/opt/everpublich/bin/evernote-run-ssh-x
+sudo systemctl start evernote-client.service
+```
+
+Example:
+
+```sh
+EVERPUBLICH_SSH_HOST=VM_PUBLIC_IP ./scripts/update-code.sh
+EVERPUBLICH_SSH_HOST=VM_PUBLIC_IP ./scripts/show-logs.sh
+```
 
 CI publishes GitHub Pages on pushes to `main`. Optional repository variables:
 
-- `EVERPUBLICH_PAGES_API_BASE_URL` - deployed Lambda Function URL used by the connect/admin browser calls.
+- `EVERPUBLICH_PAGES_API_BASE_URL` - VM API base URL used by the connect/admin browser calls.
 - `EVERPUBLICH_PAGES_BASE_DOMAIN` - domain shown in the landing page subdomain hint.
 
 CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.properties` points SonarCloud at that report.
@@ -223,16 +259,14 @@ CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.pro
 ## Documentation links
 
 - [Evernote developer documentation](https://dev.evernote.com/doc/)
-- [Evernote OAuth](https://dev.evernote.com/doc/articles/authentication.php)
-- [Evernote API permissions](https://dev.evernote.com/doc/articles/permissions.php)
 - [Evernote notebook sharing](https://dev.evernote.com/doc/articles/notebook_sharing.php)
 - [Zola documentation](https://www.getzola.org/documentation/getting-started/overview/)
 - [Zola themes](https://www.getzola.org/themes/)
-- [AWS Lambda Rust runtime](https://github.com/awslabs/aws-lambda-rust-runtime)
-- [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [Amazon S3](https://docs.aws.amazon.com/s3/)
-- [Amazon CloudFront](https://docs.aws.amazon.com/cloudfront/)
-- [Amazon DynamoDB](https://docs.aws.amazon.com/dynamodb/)
+- [Oracle Cloud Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
+- [Terraform OCI provider](https://registry.terraform.io/providers/oracle/oci/latest/docs)
+- [OCI compute instances](https://docs.oracle.com/en-us/iaas/Content/Compute/Concepts/computeoverview.htm)
+- [SQLite documentation](https://www.sqlite.org/docs.html)
+- [nginx documentation](https://nginx.org/en/docs/)
 
 ## Support
 
