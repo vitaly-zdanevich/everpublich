@@ -211,7 +211,6 @@ Scripts:
 - `scripts/deploy.sh` builds and applies Terraform.
 - `scripts/update-code.sh` updates Lambda code without changing Terraform-managed resources.
 - `scripts/show-logs.sh` reads recent CloudWatch logs.
-- `scripts/embed_readme.py` embeds README text into the landing page during CI.
 - `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
 
 CI publishes GitHub Pages on pushes to `main`. Optional repository variables:

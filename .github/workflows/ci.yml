@@ -24,8 +24,6 @@ jobs:
           curl -fsSL "https://github.com/getzola/zola/releases/download/${ZOLA_VERSION}/zola-${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/zola.tar.gz
           sudo tar -xzf /tmp/zola.tar.gz -C /usr/local/bin zola
           zola --version
-      - name: Embed README
-        run: python scripts/embed_readme.py README.md web/readme-embed.html
       - name: Build GitHub Pages artifact
         run: python scripts/build_pages.py
       - name: Format
@@ -62,8 +60,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
-      - name: Embed README
-        run: python scripts/embed_readme.py README.md web/readme-embed.html
       - name: Build GitHub Pages artifact
         env:
           EVERPUBLICH_PAGES_API_BASE_URL: ${{ vars.EVERPUBLICH_PAGES_API_BASE_URL }}

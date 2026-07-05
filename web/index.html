@@ -8,15 +8,6 @@
 	<link rel='stylesheet' href='app.css'>
 </head>
 <body>
-	<header class='topbar'>
-		<nav>
-			<a href='#features'>Features</a>
-			<a href='#readme'>README</a>
-			<a href='pricing.html'>Pricing</a>
-			<a href='admin.html'>Admin</a>
-		</nav>
-	</header>
-
 	<main>
 		<section class='hero'>
 			<div class='hero-copy'>
@@ -30,7 +21,7 @@
 						<input id='site-name' name='site_name' minlength='3' placeholder='my-evernote-blog' required>
 						<button type='submit'>Connect Evernote notebook read-only to make a website from it</button>
 					</div>
-					<p class='hint'>Your site will use a subdomain under __BASE_DOMAIN__.</p>
+					<p class='hint'>Your site will use a subdomain under __BASE_DOMAIN__</p>
 				</form>
 				<div id='connect-status' class='status' hidden>
 					<span class='spinner' aria-hidden='true'></span>
@@ -52,10 +43,6 @@
 			</ul>
 		</section>
 
-		<section id='readme' class='band readme'>
-			<h2>README</h2>
-			<div class='readme-body'>__README_HTML__</div>
-		</section>
 	</main>
 
 	<script type='module' src='landing.js'></script>

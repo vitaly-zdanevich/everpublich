@@ -219,15 +219,6 @@ button:disabled {
 	padding: 18px;
 }
 
-.readme-body {
-	max-height: 520px;
-	overflow: auto;
-	border: 1px solid var(--line);
-	border-radius: 8px;
-	padding: 18px;
-	background: var(--panel);
-}
-
 .admin-layout {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 320px;

@@ -153,7 +153,6 @@ fn landing_html(cfg: &AppConfig) -> String {
 	include_str!("../web/index.html")
 		.replace("__API_BASE_URL__", "")
 		.replace("__BASE_DOMAIN__", &cfg.base_domain)
-		.replace("__README_HTML__", include_str!("../web/readme-embed.html"))
 }
 
 fn admin_html(cfg: &AppConfig) -> String {
