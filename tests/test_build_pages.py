@@ -27,6 +27,7 @@ class BuildPagesTest(unittest.TestCase):
 			'Your address will be https://d2ieo3xczytvos.cloudfront.net/&lt;your-notebook-name>',
 			index,
 		)
+		self.assertIn('If you stop sharing the notebook', index)
 		self.assertIn('Plans, if we have users', index)
 		self.assertIn('Nice subdomain address and custom domains', index)
 		self.assertIn('Sync to WordPress', index)
@@ -35,7 +36,10 @@ class BuildPagesTest(unittest.TestCase):
 		self.assertNotIn('\n\t', index)
 		self.assertIn('<link href="app.css" rel="stylesheet">', index)
 		self.assertIn('prefers-color-scheme', css)
+		self.assertIn('::selection', css)
+		self.assertIn('background-color:#292', css)
 		self.assertNotIn('border-bottom:1px solid var(--line)', css)
+		self.assertNotIn('min-height:calc(100vh', css)
 		self.assertNotIn('\n', css)
 
 

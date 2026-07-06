@@ -58,6 +58,8 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "list-style:none");
 	assert_contains(&style, "#search-results li:hover");
 	assert_contains(&style, ".post-nav");
+	assert_contains(&style, "::selection");
+	assert_contains(&style, "background-color:#292");
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");
 	assert_contains(
