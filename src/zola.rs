@@ -9,6 +9,7 @@ use html_escape::{
 	encode_text,
 };
 use regex::Regex;
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -52,6 +53,7 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 	write_templates(root)?;
 	write_file(&root.join("static/style.css"), STYLE_CSS)?;
 	write_file(&root.join("static/search.js"), SEARCH_JS)?;
+	write_search_metadata(root, &user.settings, posts)?;
 	if let Some(custom_css) = user
 		.settings
 		.custom_css
@@ -509,6 +511,28 @@ fn write_empty_tags_page(root: &Path) -> Result<()> {
 	)
 }
 
+fn write_search_metadata(root: &Path, settings: &SiteSettings, posts: &[Post]) -> Result<()> {
+	let mut metadata = serde_json::Map::new();
+	for post in posts {
+		let path = match post.kind {
+			PostKind::BlogPost => format!("posts/{}/", post.slug),
+			PostKind::Page => format!("{}/", post.slug),
+			PostKind::About => "about/".to_string(),
+		};
+		metadata.insert(
+			site_url(&settings.base_url, &path),
+			json!({
+				"date": post.date.format("%Y-%m-%d").to_string(),
+			}),
+		);
+	}
+	let js = format!(
+		"window.everpublichSearchMetadata = {};\n",
+		serde_json::to_string(&metadata)?
+	);
+	write_file(&root.join("static/search_metadata.js"), &js)
+}
+
 fn write_podcast(root: &Path, settings: &SiteSettings, posts: &[Post]) -> Result<usize> {
 	let mut items = String::new();
 	let mut count = 0usize;
@@ -688,11 +712,11 @@ const BASE_HTML: &str = r#"<!doctype html>
   {% if config.extra.search_google %}
     <form action="https://www.google.com/search" class="search" method="get"><input name="q" type="search" placeholder="Search"><input name="sitesearch" type="hidden" value="{{ config.base_url }}"></form>
     {% elif config.extra.search_static %}
-    <form class="search" role="search"><input id="site-search" type="search" placeholder="Search" autocomplete="off"><ol id="search-results" hidden></ol></form>
+    <form class="search" role="search"><input id="site-search" type="search" placeholder="Search" autocomplete="off"><ul id="search-results" hidden></ul></form>
     {% endif %}
   </header>
   <main>{% block content %}{% endblock content %}</main>
-  {% if config.extra.search_static %}<script src="{{ get_url(path='search_index.en.js') | safe }}"></script><script src="{{ get_url(path='search.js') | safe }}"></script>{% endif %}
+  {% if config.extra.search_static %}<script src="{{ get_url(path='search_index.en.js') | safe }}"></script><script src="{{ get_url(path='search_metadata.js', cachebust=true) | safe }}"></script><script src="{{ get_url(path='search.js') | safe }}"></script>{% endif %}
   {% if config.extra.has_custom_css %}<link rel="stylesheet" href="{{ get_url(path='custom.css', cachebust=true) }}">{% endif %}
 </body>
 </html>

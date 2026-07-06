@@ -9,6 +9,26 @@
 			event.preventDefault();
 		});
 	}
+	function normalizeText(value) {
+		const decoder = document.createElement('textarea');
+		decoder.innerHTML = value || '';
+		return decoder.value.replace(/\s+/g, ' ').trim();
+	}
+	function truncateText(value) {
+		return value.length > 1000 ? value.slice(0, 997) + '...' : value;
+	}
+	function resultTitle(page, url) {
+		const metadata = (window.everpublichSearchMetadata && window.everpublichSearchMetadata[url]) || {};
+		const parts = [];
+		const body = normalizeText(page.body);
+		if (metadata.date) {
+			parts.push(metadata.date);
+		}
+		if (body) {
+			parts.push(body);
+		}
+		return truncateText(parts.join('\n\n') || page.title || url);
+	}
 	input.addEventListener('input', function () {
 		const query = input.value.trim().toLowerCase();
 		list.innerHTML = '';
@@ -28,6 +48,7 @@
 			const link = document.createElement('a');
 			link.href = url;
 			link.textContent = page.title || url;
+			link.title = resultTitle(page, url);
 			item.appendChild(link);
 			list.appendChild(item);
 			return list.children.length >= 10;

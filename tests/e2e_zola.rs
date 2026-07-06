@@ -34,7 +34,9 @@ fn zola_build_renders_public_html() {
 	assert_contains(&index, "Rich ENML formatting is preserved.");
 	assert_contains(&index, "www.youtube.com/embed/dQw4w9WgXcQ");
 	assert_contains(&index, "id=site-search");
+	assert_contains(&index, "<ul hidden id=search-results>");
 	assert_contains(&index, "search_index.en.js");
+	assert_contains(&index, "search_metadata.js");
 	assert_contains(&index, "rss.xml");
 	assert_contains(&index, "podcast.xml");
 	assert_contains(&index, ">About<");
@@ -43,9 +45,18 @@ fn zola_build_renders_public_html() {
 
 	let search_js = read(&public, "search.js");
 	assert_contains(&search_js, "documentStore.docs");
+	assert_contains(&search_js, "everpublichSearchMetadata");
+	assert_contains(&search_js, ".title=");
+	let search_metadata = read(&public, "search_metadata.js");
+	assert_contains(
+		&search_metadata,
+		"\"https://my-notebook.everpublich.example/posts/hello-from-evernote/\":{\"date\":\"2023-11-14\"}",
+	);
 	let style = read(&public, "style.css");
 	assert_contains(&style, ".search:focus-within");
 	assert_contains(&style, "transition:width .12s");
+	assert_contains(&style, "list-style:none");
+	assert_contains(&style, "#search-results li:hover");
 	assert_contains(&style, ".post-nav");
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");
