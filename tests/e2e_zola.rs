@@ -305,6 +305,10 @@ fn zola_build_renders_public_html() {
 
 	let about = read(&public, "about/index.html");
 	assert_contains(&about, "I use Evernote from 2009 and love it.");
+	assert_contains(&about, "<span>About</span>");
+	assert_not_contains(&about, "<h1>About</h1>");
+	assert_not_contains(&about, "<time>");
+	assert_not_contains(&about, ">About</a>");
 	assert_not_contains(&about, "post-nav");
 
 	assert!(public.join("sitemap.xml").exists());

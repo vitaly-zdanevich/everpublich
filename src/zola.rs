@@ -1234,7 +1234,7 @@ const BASE_HTML: &str = r#"<!doctype html>
       {% endif %}
       {% if current_path == "/calendar/" %}<span>Calendar</span>{% else %}<a href="{{ get_url(path='/calendar/') }}">Calendar</a>{% endif %}
       {% if config.extra.has_about_page %}
-      <a href="{{ get_url(path='/about/') }}">About</a>
+      {% if current_path == "/about/" %}<span>About</span>{% else %}<a href="{{ get_url(path='/about/') }}">About</a>{% endif %}
       {% endif %}
       {% for nav_tag in config.extra.nav_tags %}
       <a href="{{ get_url(path='/tags/' ~ nav_tag.slug ~ '/') | safe }}" title="{{ nav_tag.title }}">#{{ nav_tag.name }}</a>
@@ -1280,8 +1280,10 @@ const PAGE_HTML: &str = r#"{% extends "base.html" %}
 {% block title %}{{ page.title }} · {{ config.title }}{% endblock title %}
 {% block content %}
 <article class="post">
+  {% if current_path != "/about/" %}
   <h1>{{ page.title }}</h1>
   {% if page.date %}<p class="meta"><time>{{ page.date | date(format="%Y-%m-%d") }}</time></p>{% endif %}
+  {% endif %}
   <div class="content">{{ page.content | safe }}</div>
   {% if page.taxonomies.tags %}<p class="tags">{% for tag in page.taxonomies.tags %}<a href="{{ get_taxonomy_url(kind='tags', name=tag) | safe }}">#{{ tag }}</a>{% endfor %}</p>{% endif %}
 </article>
