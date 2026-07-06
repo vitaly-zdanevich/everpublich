@@ -10,14 +10,14 @@ use crate::models::{
 	BuildState, EvernoteAccessMode, IndexMode, Note, Post, PostKind, Resource, SearchMode,
 	SiteSettings, UserItem,
 };
-use crate::slug::{slug_from_title_and_tags, slugify};
+use crate::slug::slugify;
 use crate::store::SqliteUserRow;
 use crate::zola::{GeneratedSite, write_zola_site};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -254,13 +254,12 @@ fn read_cache_sites(
 			options.cloudfront_url.as_deref(),
 		)?;
 
-		let mut notes = read_notes_for_notebook(
+		let notes = read_notes_for_notebook(
 			&cache_db,
 			&options.evernote_config_dir,
 			&notebook.id,
 			&account_label,
 		)?;
-		deduplicate_note_slugs(&mut notes);
 		if !notes.is_empty() {
 			sites.push(CacheSite { user, notes });
 		}
@@ -331,13 +330,16 @@ fn read_notes_for_notebook(
 
 	rows.into_iter()
 		.map(|row| {
-			let tags = read_tags(cache_db, &row.id)?;
+			let mut tags = read_tags(cache_db, &row.id)?;
 			let attachments = read_attachments(cache_db, config_dir, &row.id)?;
 			let resources = attachments
 				.iter()
 				.map(|attachment| attachment.resource.clone())
 				.collect::<Vec<_>>();
 			let rte_text = read_note_rte_text(config_dir, &row.id, &row.title)?;
+			let plain_text = note_plain_text(&row.content, &row.snippet, rte_text.as_deref());
+			let (body_text, content_tags) = extract_trailing_content_tags(&plain_text);
+			extend_unique_tags(&mut tags, content_tags);
 			let files = attachments
 				.into_iter()
 				.filter_map(|attachment| {
@@ -355,12 +357,7 @@ fn read_notes_for_notebook(
 					title: clean_title(&row.title),
 					created: evernote_millis_to_utc(row.created_millis)?,
 					updated: evernote_millis_to_utc(row.updated_millis)?,
-					enml: plain_text_to_enml(
-						&row.content,
-						&row.snippet,
-						rte_text.as_deref(),
-						&resources,
-					),
+					enml: plain_text_to_enml(&body_text, &resources),
 					resources,
 					tags,
 				},
@@ -383,6 +380,19 @@ fn read_tags(cache_db: &Connection, note_id: &str) -> Result<Vec<String>> {
 		.query_map([note_id], |row| row.get(0))?
 		.collect::<rusqlite::Result<Vec<String>>>()?;
 	Ok(tags)
+}
+
+/// Merge tags parsed from note text with real Evernote tags without adding
+/// case-insensitive duplicates.
+fn extend_unique_tags(tags: &mut Vec<String>, content_tags: Vec<String>) {
+	for tag in content_tags {
+		if !tags
+			.iter()
+			.any(|existing| existing.eq_ignore_ascii_case(&tag))
+		{
+			tags.push(tag);
+		}
+	}
 }
 
 fn read_attachments(
@@ -815,19 +825,65 @@ fn replace_note_index(app_db: &Connection, user_id: &str, posts: &[Post]) -> Res
 	Ok(())
 }
 
-fn plain_text_to_enml(
-	content: &str,
-	snippet: &str,
-	rte_text: Option<&str>,
-	resources: &[Resource],
-) -> String {
-	let text = if !content.trim().is_empty() {
+/// Choose the best available plain text source from the Evernote cache.
+fn note_plain_text(content: &str, snippet: &str, rte_text: Option<&str>) -> String {
+	if !content.trim().is_empty() {
 		normalize_indexed_plain_text(content)
 	} else if !snippet.trim().is_empty() {
 		normalize_indexed_plain_text(snippet)
 	} else {
 		normalize_plain_text(rte_text.unwrap_or(""))
+	}
+}
+
+/// Split a final metadata line from the rendered body.
+///
+/// The line is treated as metadata only when every token is either `#tag` or a
+/// bare `slug:value` token. `#slug:value` is intentionally not accepted. The
+/// returned body excludes that metadata line.
+fn extract_trailing_content_tags(text: &str) -> (String, Vec<String>) {
+	let mut lines = text.lines().collect::<Vec<_>>();
+	let Some(tag_line_index) = lines.iter().rposition(|line| !line.trim().is_empty()) else {
+		return (text.into(), vec![]);
 	};
+	let tags = parse_content_tag_line(lines[tag_line_index]);
+	if tags.is_empty() {
+		return (text.into(), vec![]);
+	}
+	lines.remove(tag_line_index);
+	while lines.last().is_some_and(|line| line.trim().is_empty()) {
+		lines.pop();
+	}
+	(lines.join("\n"), tags)
+}
+
+/// Parse one content metadata line into tags understood by the post mapper.
+fn parse_content_tag_line(line: &str) -> Vec<String> {
+	let tokens = line.split_whitespace().collect::<Vec<_>>();
+	if tokens.is_empty() || tokens.iter().any(|token| !is_content_tag_token(token)) {
+		return vec![];
+	}
+	tokens
+		.into_iter()
+		.filter_map(|token| {
+			let tag = token.strip_prefix('#').unwrap_or(token).trim();
+			if tag.is_empty() {
+				None
+			} else {
+				Some(tag.to_string())
+			}
+		})
+		.collect()
+}
+
+/// Return whether a final-line token is supported note metadata.
+fn is_content_tag_token(token: &str) -> bool {
+	token.starts_with("slug:") || (token.starts_with('#') && !token.starts_with("#slug:"))
+}
+
+/// Convert plain text from the Evernote cache into the subset of ENML that the
+/// renderer already understands.
+fn plain_text_to_enml(text: &str, resources: &[Resource]) -> String {
 	let mut enml = String::from("<en-note>");
 	for paragraph in text
 		.split("\n\n")
@@ -860,21 +916,6 @@ fn normalize_indexed_plain_text(text: &str) -> String {
 
 fn normalize_plain_text(text: &str) -> String {
 	text.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-fn deduplicate_note_slugs(notes: &mut [CachedNote]) {
-	let mut seen = HashMap::<String, usize>::new();
-	for cached in notes {
-		let slug = slug_from_title_and_tags(&cached.note.title, &cached.note.tags);
-		let count = seen.entry(slug.clone()).or_default();
-		if *count > 0 {
-			cached
-				.note
-				.tags
-				.push(format!("slug:{}-{}", slug, short_guid(&cached.note.guid)));
-		}
-		*count += 1;
-	}
 }
 
 fn public_base_url(subdomain: &str, base_domain: &str, cloudfront_url: Option<&str>) -> String {
@@ -928,13 +969,6 @@ fn account_label_from_db_path(graph_db: &Path) -> String {
 		.and_then(|name| name.strip_suffix("+RemoteGraph.sql"))
 		.unwrap_or("evernote-account")
 		.to_string()
-}
-
-fn short_guid(guid: &str) -> String {
-	guid.chars()
-		.filter(|character| character.is_ascii_hexdigit())
-		.take(8)
-		.collect::<String>()
 }
 
 fn bool_to_int(value: bool) -> i64 {
@@ -1016,17 +1050,44 @@ mod tests {
 
 	#[test]
 	fn normalizes_indexed_slash_n_line_breaks() {
-		let enml = plain_text_to_enml(
+		let text = note_plain_text(
 			"Chapter 8. Data Types/nTable of Contents/n8.1. /nNumeric Types",
 			"",
 			None,
-			&[],
 		);
+		let enml = plain_text_to_enml(&text, &[]);
 
 		assert_eq!(
 			enml,
 			"<en-note><p>Chapter 8. Data Types<br>Table of Contents<br>8.1. <br>Numeric Types</p></en-note>"
 		);
+	}
+
+	#[test]
+	fn extracts_content_tags_from_last_metadata_line() {
+		let (body, tags) = extract_trailing_content_tags(
+			"Chapter 8. Data Types\n\nTable of Contents\n\n#postgres #page slug:data-types",
+		);
+
+		assert_eq!(body, "Chapter 8. Data Types\n\nTable of Contents");
+		assert_eq!(tags, vec!["postgres", "page", "slug:data-types"]);
+		assert!(!plain_text_to_enml(&body, &[]).contains("slug:data-types"));
+	}
+
+	#[test]
+	fn keeps_prose_hashtags_in_body() {
+		let (body, tags) = extract_trailing_content_tags("I like #postgres in prose");
+
+		assert_eq!(body, "I like #postgres in prose");
+		assert!(tags.is_empty());
+	}
+
+	#[test]
+	fn rejects_hash_prefixed_slug_metadata() {
+		let (body, tags) = extract_trailing_content_tags("Body\n\n#postgres #slug:data-types");
+
+		assert_eq!(body, "Body\n\n#postgres #slug:data-types");
+		assert!(tags.is_empty());
 	}
 
 	struct CacheFixture {

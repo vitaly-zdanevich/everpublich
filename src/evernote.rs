@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use sha1::Sha1;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -141,20 +141,52 @@ fn encode(value: &str) -> String {
 
 /// Convert fetched Evernote notes to blog posts/pages.
 pub fn notes_to_posts(notes: &[Note], expand_widgets: bool) -> Vec<Post> {
-	let note_slug_by_guid = notes
-		.iter()
-		.map(|note| {
-			(
-				note.guid.to_ascii_lowercase(),
-				slug_from_title_and_tags(&note.title, &note.tags),
-			)
-		})
-		.collect::<HashMap<_, _>>();
+	let note_slug_by_guid = unique_note_slug_map(notes);
 
 	notes
 		.iter()
-		.map(|note| note_to_post(note, &note_slug_by_guid, expand_widgets))
+		.map(|note| {
+			let slug = note_slug_by_guid
+				.get(&note.guid.to_ascii_lowercase())
+				.cloned()
+				.unwrap_or_else(|| slug_from_title_and_tags(&note.title, &note.tags));
+			note_to_post_with_slug(note, slug, &note_slug_by_guid, expand_widgets)
+		})
 		.collect()
+}
+
+/// Build the final URL slug for each note GUID, making duplicate title or
+/// explicit `slug:` values unique before internal Evernote links are rewritten.
+fn unique_note_slug_map(notes: &[Note]) -> HashMap<String, String> {
+	let mut seen_bases = HashSet::<String>::new();
+	let mut used_slugs = HashSet::<String>::new();
+	let mut slugs = HashMap::new();
+	for note in notes {
+		let base = slug_from_title_and_tags(&note.title, &note.tags);
+		let candidate = if seen_bases.insert(base.clone()) {
+			base.clone()
+		} else {
+			format!("{base}-{}", note.created.format("%Y%m%d-%H%M%S"))
+		};
+		let slug = unique_slug(candidate, &mut used_slugs);
+		slugs.insert(note.guid.to_ascii_lowercase(), slug);
+	}
+	slugs
+}
+
+/// Return `candidate` unless it was already used; otherwise append a short
+/// numeric suffix. This handles notes created in the same second.
+fn unique_slug(candidate: String, used_slugs: &mut HashSet<String>) -> String {
+	if used_slugs.insert(candidate.clone()) {
+		return candidate;
+	}
+	for index in 2.. {
+		let slug = format!("{candidate}-{index}");
+		if used_slugs.insert(slug.clone()) {
+			return slug;
+		}
+	}
+	unreachable!("unbounded integer sequence must eventually produce a unique slug")
 }
 
 /// Convert one Evernote note to one generated post/page.
@@ -164,6 +196,15 @@ pub fn note_to_post(
 	expand_widgets: bool,
 ) -> Post {
 	let slug = slug_from_title_and_tags(&note.title, &note.tags);
+	note_to_post_with_slug(note, slug, note_slug_by_guid, expand_widgets)
+}
+
+fn note_to_post_with_slug(
+	note: &Note,
+	slug: String,
+	note_slug_by_guid: &HashMap<String, String>,
+	expand_widgets: bool,
+) -> Post {
 	let kind = post_kind(&note.tags);
 	let body = enml_to_zola_body(&note.enml, &note.resources, note_slug_by_guid);
 	let body = expand_bare_links(&body, expand_widgets);
@@ -257,6 +298,70 @@ mod tests {
 
 		assert!(post.body.contains(r#"{{ audio(src="episode.mp3") }}"#));
 		assert!(post.tags.contains(&"podcast".to_string()));
+	}
+
+	#[test]
+	fn deduplicates_duplicate_title_slugs() {
+		let target_guid = "22222222-2222-2222-2222-222222222222";
+		let notes = vec![
+			Note {
+				guid: "11111111-1111-1111-1111-111111111111".into(),
+				title: "Same title".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec![],
+				enml: format!(
+					r#"<en-note><a href="evernote:///view/1/s1/{target_guid}/{target_guid}/">next</a></en-note>"#
+				),
+				resources: vec![],
+			},
+			Note {
+				guid: target_guid.into(),
+				title: "Same title".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec![],
+				enml: "<en-note>duplicate</en-note>".into(),
+				resources: vec![],
+			},
+		];
+		let posts = notes_to_posts(&notes, true);
+
+		assert_eq!(posts[0].slug, "same-title");
+		assert_eq!(posts[1].slug, "same-title-20231114-221321");
+		assert!(
+			posts[0]
+				.body
+				.contains(r#"/posts/same-title-20231114-221321/"#)
+		);
+	}
+
+	#[test]
+	fn deduplicates_duplicate_explicit_slug_tags() {
+		let notes = vec![
+			Note {
+				guid: "11111111-1111-1111-1111-111111111111".into(),
+				title: "First title".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec!["slug:custom".into()],
+				enml: "<en-note>first</en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "22222222-2222-2222-2222-222222222222".into(),
+				title: "Second title".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec!["slug:custom".into()],
+				enml: "<en-note>second</en-note>".into(),
+				resources: vec![],
+			},
+		];
+		let posts = notes_to_posts(&notes, true);
+
+		assert_eq!(posts[0].slug, "custom");
+		assert_eq!(posts[1].slug, "custom-20231114-221321");
 	}
 
 	#[test]
