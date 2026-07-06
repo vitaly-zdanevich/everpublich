@@ -792,6 +792,30 @@ fn reddit_embed_html(url: &str) -> String {
 }
 
 fn reddit_post_alive(url: &Url) -> Option<bool> {
+	let status = reddit_post_oembed_status(url)?;
+	if matches!(status, 200..=299) {
+		return Some(true);
+	}
+	if definitely_broken_status(status) {
+		return Some(false);
+	}
+	reddit_post_alive_from_json(url)
+}
+
+fn reddit_post_oembed_status(url: &Url) -> Option<u16> {
+	reddit_post_json_url(url)?;
+	Some(
+		metadata_client()?
+			.get("https://www.reddit.com/oembed")
+			.query(&[("url", url.as_str())])
+			.send()
+			.ok()?
+			.status()
+			.as_u16(),
+	)
+}
+
+fn reddit_post_alive_from_json(url: &Url) -> Option<bool> {
 	let json_url = reddit_post_json_url(url)?;
 	let response: Value = metadata_client()?
 		.get(json_url)
