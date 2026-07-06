@@ -24,7 +24,7 @@ class BuildPagesTest(unittest.TestCase):
 			index,
 		)
 		self.assertIn(
-			'Your address will be https://&lt;your-notebook-name>.everpublich.my',
+			'Your address will be &lt;your-notebook-name>.everpublich.my',
 			index,
 		)
 		self.assertIn('If you stop sharing the notebook', index)

@@ -261,6 +261,9 @@ pub struct Resource {
 	/// Optional archive listing rendered as a closed tree.
 	#[serde(default)]
 	pub archive_tree: Option<String>,
+	/// Original attachment size in bytes, when the Evernote cache has the file.
+	#[serde(default)]
+	pub size_bytes: Option<u64>,
 }
 
 /// A post/page ready to write into Zola content.

@@ -19,10 +19,11 @@ use chrono::{DateTime, TimeZone, Utc};
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
@@ -483,63 +484,100 @@ fn read_attachments(
 		})?
 		.collect::<rusqlite::Result<Vec<_>>>()?;
 
-	attachments
+	let attachments = attachments
 		.into_iter()
-		.map(|(hash, filename, mime)| {
-			let original_file_name = safe_file_name(&filename, &hash);
-			let source_path = find_cached_resource_file(config_dir, &hash)?;
-			let transform = resource_transform(&original_file_name, &mime, source_path.as_deref());
-			let file_name = match transform {
-				ResourceTransform::Copy => original_file_name.clone(),
-				ResourceTransform::ImageToAvif
-				| ResourceTransform::VectorToAvif
-				| ResourceTransform::DngToAvif => file_name_with_extension(&original_file_name, &hash, "avif"),
-				ResourceTransform::DngEmbeddedJpeg => {
-					file_name_with_extension(&original_file_name, &hash, "jpg")
-				}
-				ResourceTransform::TrackerToOpus => {
-					file_name_with_extension(&original_file_name, &hash, "opus")
-				}
-			};
-			let resource_mime = match transform {
-				ResourceTransform::ImageToAvif
-				| ResourceTransform::VectorToAvif
-				| ResourceTransform::DngToAvif => "image/avif".to_string(),
-				ResourceTransform::DngEmbeddedJpeg => "image/jpeg".to_string(),
-				ResourceTransform::TrackerToOpus => "audio/opus".to_string(),
-				ResourceTransform::Copy => mime.clone(),
-			};
-			let original_resource_file_name = matches!(
-				transform,
-				ResourceTransform::ImageToAvif
-					| ResourceTransform::VectorToAvif
-					| ResourceTransform::DngEmbeddedJpeg
-					| ResourceTransform::DngToAvif
-			)
-			.then(|| original_file_name.clone());
-			let text_preview = source_path
-				.as_deref()
-				.filter(|_| is_text_like_attachment(&file_name, &mime))
-				.and_then(read_text_preview);
-			let archive_tree = source_path
-				.as_deref()
-				.filter(|_| is_archive_attachment(&file_name, &mime))
-				.and_then(read_archive_tree);
-			Ok(CachedAttachment {
-				resource: Resource {
-					hash: hash.to_ascii_lowercase(),
-					file_name,
-					original_file_name: original_resource_file_name,
-					mime: resource_mime,
-					s3_key: None,
-					text_preview,
-					archive_tree,
-				},
-				source_path,
-				transform,
-			})
-		})
-		.collect()
+		.map(|(hash, filename, mime)| cached_attachment(config_dir, &hash, &filename, &mime))
+		.collect::<Result<Vec<_>>>()?
+		.into_iter()
+		.flatten()
+		.collect();
+	Ok(attachments)
+}
+
+fn cached_attachment(
+	config_dir: &Path,
+	hash: &str,
+	filename: &str,
+	mime: &str,
+) -> Result<Option<CachedAttachment>> {
+	let original_file_name = safe_file_name(filename, hash);
+	let Some(source_path) = find_cached_resource_file(config_dir, hash)? else {
+		return Ok(None);
+	};
+	let size_bytes = Some(
+		fs::metadata(&source_path)
+			.with_context(|| format!("failed to stat attachment {}", source_path.display()))?
+			.len(),
+	);
+	let transform = resource_transform(&original_file_name, mime, Some(&source_path));
+	let file_name = transformed_file_name(&original_file_name, hash, transform);
+	let resource_mime = transformed_mime(mime, transform);
+	let original_resource_file_name = preview_original_file_name(&original_file_name, transform);
+	let text_preview = Some(source_path.as_path())
+		.filter(|_| is_text_like_attachment(&file_name, mime))
+		.and_then(read_text_preview);
+	let archive_tree = Some(source_path.as_path())
+		.filter(|_| is_archive_attachment(&file_name, mime))
+		.and_then(read_archive_tree);
+
+	Ok(Some(CachedAttachment {
+		resource: Resource {
+			hash: hash.to_ascii_lowercase(),
+			file_name,
+			original_file_name: original_resource_file_name,
+			mime: resource_mime,
+			s3_key: None,
+			text_preview,
+			archive_tree,
+			size_bytes,
+		},
+		source_path: Some(source_path),
+		transform,
+	}))
+}
+
+fn transformed_file_name(
+	original_file_name: &str,
+	hash: &str,
+	transform: ResourceTransform,
+) -> String {
+	match transform {
+		ResourceTransform::Copy => original_file_name.to_string(),
+		ResourceTransform::ImageToAvif
+		| ResourceTransform::VectorToAvif
+		| ResourceTransform::DngToAvif => file_name_with_extension(original_file_name, hash, "avif"),
+		ResourceTransform::DngEmbeddedJpeg => {
+			file_name_with_extension(original_file_name, hash, "jpg")
+		}
+		ResourceTransform::TrackerToOpus => {
+			file_name_with_extension(original_file_name, hash, "opus")
+		}
+	}
+}
+
+fn transformed_mime(mime: &str, transform: ResourceTransform) -> String {
+	match transform {
+		ResourceTransform::ImageToAvif
+		| ResourceTransform::VectorToAvif
+		| ResourceTransform::DngToAvif => "image/avif".to_string(),
+		ResourceTransform::DngEmbeddedJpeg => "image/jpeg".to_string(),
+		ResourceTransform::TrackerToOpus => "audio/opus".to_string(),
+		ResourceTransform::Copy => mime.to_string(),
+	}
+}
+
+fn preview_original_file_name(
+	original_file_name: &str,
+	transform: ResourceTransform,
+) -> Option<String> {
+	matches!(
+		transform,
+		ResourceTransform::ImageToAvif
+			| ResourceTransform::VectorToAvif
+			| ResourceTransform::DngEmbeddedJpeg
+			| ResourceTransform::DngToAvif
+	)
+	.then(|| original_file_name.to_string())
 }
 
 fn is_text_like_attachment(file_name: &str, mime: &str) -> bool {
@@ -620,14 +658,108 @@ fn read_archive_tree(path: &Path) -> Option<String> {
 	if !output.status.success() {
 		return None;
 	}
-	let tree = String::from_utf8_lossy(&output.stdout)
+	let entries = String::from_utf8_lossy(&output.stdout)
 		.lines()
 		.take(1000)
+		.map(str::trim_end)
+		.filter(|line| !line.is_empty())
+		.map(str::to_string)
+		.collect::<Vec<_>>();
+	let tree = archive_entries_to_tree(&entries);
+	(!tree.is_empty()).then_some(tree)
+}
+
+#[derive(Default)]
+struct ArchiveTreeNode {
+	children: BTreeMap<String, ArchiveTreeNode>,
+}
+
+fn archive_entries_to_tree(entries: &[String]) -> String {
+	archive_entries_to_tree_command(entries)
+		.unwrap_or_else(|| archive_entries_to_tree_fallback(entries))
+}
+
+fn archive_entries_to_tree_command(entries: &[String]) -> Option<String> {
+	let entries = normalized_archive_entries(entries);
+	if entries.is_empty() {
+		return None;
+	}
+	let mut child = Command::new("tree")
+		.arg("--fromfile")
+		.arg("--noreport")
+		.arg("--charset=ascii")
+		.arg(".")
+		.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::null())
+		.spawn()
+		.ok()?;
+	{
+		let mut stdin = child.stdin.take()?;
+		for entry in entries {
+			writeln!(stdin, "{entry}").ok()?;
+		}
+	}
+	let output = child.wait_with_output().ok()?;
+	if !output.status.success() {
+		return None;
+	}
+	let tree = String::from_utf8_lossy(&output.stdout)
+		.lines()
 		.map(str::trim_end)
 		.filter(|line| !line.is_empty())
 		.collect::<Vec<_>>()
 		.join("\n");
 	(!tree.is_empty()).then_some(tree)
+}
+
+fn archive_entries_to_tree_fallback(entries: &[String]) -> String {
+	let mut root = ArchiveTreeNode::default();
+	for entry in normalized_archive_entries(entries) {
+		let parts = entry
+			.split('/')
+			.filter(|part| !part.is_empty())
+			.collect::<Vec<_>>();
+		if parts.is_empty() {
+			continue;
+		}
+		let mut node = &mut root;
+		for part in parts {
+			node = node.children.entry(part.to_string()).or_default();
+		}
+	}
+	if root.children.is_empty() {
+		return String::new();
+	}
+	let mut tree = ".".to_string();
+	push_archive_tree_children(&root, "", &mut tree);
+	tree
+}
+
+fn normalized_archive_entries(entries: &[String]) -> Vec<String> {
+	entries
+		.iter()
+		.map(|entry| entry.trim().trim_matches('/'))
+		.filter(|entry| !entry.is_empty())
+		.map(str::to_string)
+		.collect()
+}
+
+fn push_archive_tree_children(node: &ArchiveTreeNode, prefix: &str, out: &mut String) {
+	let count = node.children.len();
+	for (index, (name, child)) in node.children.iter().enumerate() {
+		let is_last = index + 1 == count;
+		out.push('\n');
+		out.push_str(prefix);
+		out.push_str(if is_last { "`-- " } else { "|-- " });
+		out.push_str(name);
+		let next_prefix = if is_last {
+			format!("{prefix}    ")
+		} else {
+			format!("{prefix}|   ")
+		};
+		push_archive_tree_children(child, &next_prefix, out);
+	}
 }
 
 fn file_extension(file_name: &str) -> Option<String> {
@@ -2057,6 +2189,36 @@ mod tests {
 		assert_eq!(site.notes[0].note.tags, vec!["intro"]);
 		assert!(site.notes[0].note.enml.contains("Cached note body"));
 		assert_eq!(site.notes[0].files.len(), 1);
+		assert_eq!(site.notes[0].note.resources[0].size_bytes, Some(5));
+	}
+
+	#[test]
+	fn skips_attachment_when_cache_binary_is_missing() {
+		let fixture = CacheFixture::new();
+
+		let attachment = cached_attachment(
+			&fixture.config_dir,
+			"missing-pdf",
+			"manual.pdf",
+			"application/pdf",
+		)
+		.unwrap();
+
+		assert!(attachment.is_none());
+	}
+
+	#[test]
+	fn formats_archive_entries_as_tree_output() {
+		let entries = vec![
+			"docs/".to_string(),
+			"docs/readme.txt".to_string(),
+			"readme.md".to_string(),
+			"src/main.rs".to_string(),
+		];
+		let expected = ".\n|-- docs\n|   `-- readme.txt\n|-- readme.md\n`-- src\n    `-- main.rs";
+
+		assert_eq!(archive_entries_to_tree_fallback(&entries), expected);
+		assert_eq!(archive_entries_to_tree(&entries), expected);
 	}
 
 	#[test]
@@ -2492,6 +2654,7 @@ mod tests {
 			s3_key: None,
 			text_preview: None,
 			archive_tree: None,
+			size_bytes: None,
 		}];
 		let enml = rich_text_to_enml(
 			r#"<en-note><div>Body</div><div>#postgres slug:body https://example.com/source</div></en-note>"#,

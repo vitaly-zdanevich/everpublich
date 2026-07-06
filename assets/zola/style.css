@@ -6,6 +6,8 @@
 	--line: #e6e1d8;
 	--panel: #f7f8f2;
 	--quote-bg: #eef4eb;
+	--code-bg: #24272a;
+	--code-fg: #f2f2f2;
 	--link: #0b63ce;
 	--accent: #207a4d;
 }
@@ -18,6 +20,8 @@
 		--line: #202020;
 		--panel: #101010;
 		--quote-bg: #0b1510;
+		--code-bg: #151515;
+		--code-fg: #f0f0f0;
 		--link: #7ab7ff;
 		--accent: #6ed69a;
 	}
@@ -97,20 +101,23 @@ th {
 }
 
 pre {
-	background: var(--panel);
+	background: var(--code-bg);
 	border-radius: 4px;
+	color: var(--code-fg);
 	overflow-x: auto;
 	padding: .75rem;
 }
 
 code {
-	background: var(--panel);
+	background: var(--code-bg);
 	border-radius: 4px;
+	color: var(--code-fg);
 	padding: .1rem .3rem;
 }
 
 pre code {
 	background: none;
+	color: inherit;
 	padding: 0;
 }
 

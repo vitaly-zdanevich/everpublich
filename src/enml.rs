@@ -240,7 +240,8 @@ fn media_replacement(
 		resource.mime.as_str()
 	};
 	if preview_disabled(resource, options) {
-		return attachment_download_link(
+		return attachment_download_link_for_resource(
+			resource,
 			resource
 				.original_file_name
 				.as_deref()
@@ -316,17 +317,20 @@ fn media_replacement(
 		)
 	} else if let Some(tree) = &resource.archive_tree {
 		let title = encode_text(&resource.file_name);
+		let title_attr = attachment_title_attr(resource);
 		format!(
-			r#"<details class="attachment-preview attachment-preview-archive"><summary>{title}</summary><pre>{}</pre><p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#,
-			preview_pre_text(tree)
+			r#"<details class="attachment-preview attachment-preview-archive"><summary{title_attr}>{title}</summary><pre>{}</pre><p><a class="attachment" href="{file}" download{title_attr}>Download {title}</a></p></details>"#,
+			preview_pre_text(tree),
 		)
 	} else if is_pdf(resource, mime) {
 		let title = encode_text(&resource.file_name);
+		let title_attr = attachment_title_attr(resource);
 		format!(
-			r#"<details class="attachment-preview attachment-preview-pdf"><summary>{title}</summary><iframe src="{file}" title="{title}" loading="lazy"></iframe><p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#
+			r#"<details class="attachment-preview attachment-preview-pdf"><summary{title_attr}>{title}</summary><iframe src="{file}" title="{title}" loading="lazy"></iframe><p><a class="attachment" href="{file}" download{title_attr}>Download {title}</a></p></details>"#
 		)
 	} else if is_text_preview(resource, mime) {
 		let title = encode_text(&resource.file_name);
+		let title_attr = attachment_title_attr(resource);
 		let body = resource
 			.text_preview
 			.as_deref()
@@ -335,10 +339,10 @@ fn media_replacement(
 				format!(r#"<iframe sandbox src="{file}" title="{file}" loading="lazy"></iframe>"#)
 			});
 		format!(
-			r#"<details class="attachment-preview attachment-preview-text"><summary>{title}</summary>{body}<p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#
+			r#"<details class="attachment-preview attachment-preview-text"><summary{title_attr}>{title}</summary>{body}<p><a class="attachment" href="{file}" download{title_attr}>Download {title}</a></p></details>"#
 		)
 	} else {
-		attachment_download_link(&resource.file_name)
+		attachment_download_link_for_resource(resource, &resource.file_name)
 	}
 }
 
@@ -357,12 +361,67 @@ fn preview_disabled(resource: &Resource, options: &EnmlRenderOptions<'_>) -> boo
 			})
 }
 
-fn attachment_download_link(file_name: &str) -> String {
+fn attachment_download_link_for_resource(resource: &Resource, file_name: &str) -> String {
 	let file = encode_double_quoted_attribute(file_name);
+	let title_attr = attachment_title_attr(resource);
 	format!(
-		r#"<a class="attachment" href="{file}" download>{}</a>"#,
+		r#"<a class="attachment" href="{file}" download{title_attr}>{}</a>"#,
 		encode_text(file_name)
 	)
+}
+
+fn attachment_title_attr(resource: &Resource) -> String {
+	let Some(title) = attachment_title(resource) else {
+		return String::new();
+	};
+	let title = encode_double_quoted_attribute(&title)
+		.replace('\n', "&#10;")
+		.replace('`', "&#96;");
+	format!(r#" title="{title}""#)
+}
+
+fn attachment_title(resource: &Resource) -> Option<String> {
+	let mut lines = Vec::new();
+	if let Some(size) = resource.size_bytes {
+		lines.push(format!("Size: {}", format_attachment_size(size)));
+	}
+	if let Some(tree) = resource.archive_tree.as_deref().and_then(non_empty_trimmed) {
+		if !lines.is_empty() {
+			lines.push(String::new());
+		}
+		lines.push("Files:".to_string());
+		lines.extend(
+			tree.lines()
+				.filter_map(non_empty_trimmed)
+				.map(str::to_string),
+		);
+	}
+	(!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+	let value = value.trim();
+	(!value.is_empty()).then_some(value)
+}
+
+fn format_attachment_size(size: u64) -> String {
+	const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+	let mut value = size as f64;
+	let mut unit = UNITS[0];
+	for next_unit in UNITS.iter().skip(1) {
+		if value < 1024.0 {
+			break;
+		}
+		value /= 1024.0;
+		unit = next_unit;
+	}
+	if unit == "B" {
+		format!("{size} B")
+	} else if value >= 10.0 {
+		format!("{value:.0} {unit}")
+	} else {
+		format!("{value:.1} {unit}")
+	}
 }
 
 fn is_font(resource: &Resource, mime: &str) -> bool {
@@ -492,7 +551,9 @@ fn shortcode_arg(value: &str) -> String {
 }
 
 fn preview_pre_text(text: &str) -> String {
-	encode_text(text).replace('\n', "&#10;")
+	encode_text(text)
+		.replace('`', "&#96;")
+		.replace('\n', "&#10;")
 }
 
 fn attr(attrs: &str, name: &str) -> Option<String> {
@@ -566,6 +627,7 @@ mod tests {
 			s3_key: None,
 			text_preview: None,
 			archive_tree: None,
+			size_bytes: None,
 		}];
 		let body = enml_to_zola_body(
 			r#"<en-note><en-media type="audio/mpeg" hash="abc"/></en-note>"#,
@@ -649,6 +711,7 @@ mod tests {
 				s3_key: None,
 				text_preview: Some("# Notes\n\nHello".into()),
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "glb".into(),
@@ -658,6 +721,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "stl".into(),
@@ -667,6 +731,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "pdf".into(),
@@ -676,6 +741,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 		];
 		let body = enml_to_zola_body(
@@ -704,7 +770,8 @@ mod tests {
 				mime: "application/zip".into(),
 				s3_key: None,
 				text_preview: None,
-				archive_tree: Some("docs/\ndocs/readme.txt".into()),
+				archive_tree: Some(".\n`-- docs\n    `-- readme.txt".into()),
+				size_bytes: None,
 			},
 			Resource {
 				hash: "sub".into(),
@@ -714,6 +781,7 @@ mod tests {
 				s3_key: None,
 				text_preview: Some("1\n00:00:00,000 --> 00:00:02,000\nHello".into()),
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "obj".into(),
@@ -723,6 +791,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 		];
 		let body = enml_to_zola_body(
@@ -734,7 +803,8 @@ mod tests {
 		assert!(
 			body.contains(r#"<details class="attachment-preview attachment-preview-archive">"#)
 		);
-		assert!(body.contains("docs/readme.txt"));
+		assert!(body.contains("&#96;-- docs"));
+		assert!(body.contains("&#96;-- readme.txt"));
 		assert!(body.contains("movie.srt"));
 		assert!(body.contains("00:00:00,000 --&gt; 00:00:02,000"));
 		assert!(
@@ -754,6 +824,7 @@ mod tests {
 			s3_key: None,
 			text_preview: None,
 			archive_tree: None,
+			size_bytes: None,
 		}];
 		let body = enml_to_zola_body(
 			r#"<en-note><en-media type="application/x-shockwave-flash" hash="flash"/></en-note>"#,
@@ -775,6 +846,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "epub".into(),
@@ -784,6 +856,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "cbz".into(),
@@ -793,6 +866,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 			Resource {
 				hash: "font".into(),
@@ -802,6 +876,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			},
 		];
 		let body = enml_to_zola_body(
@@ -830,6 +905,7 @@ mod tests {
 			s3_key: None,
 			text_preview: None,
 			archive_tree: None,
+			size_bytes: None,
 		}];
 		let body = enml_to_zola_body(
 			r#"<en-note><en-media type="application/illustrator" hash="ai"/></en-note>"#,
@@ -854,6 +930,7 @@ mod tests {
 			s3_key: None,
 			text_preview: None,
 			archive_tree: None,
+			size_bytes: None,
 		}];
 		let body = enml_to_zola_body_with_options(
 			r#"<en-note><en-media type="application/illustrator" hash="ai"/></en-note>"#,
@@ -869,5 +946,54 @@ mod tests {
 			body,
 			r#"<a class="attachment" href="poster.ai" download>poster.ai</a>"#
 		);
+	}
+
+	#[test]
+	fn adds_attachment_size_to_download_title() {
+		let resources = vec![Resource {
+			hash: "exe".into(),
+			file_name: "setup.exe".into(),
+			original_file_name: None,
+			mime: "application/x-msdownload".into(),
+			s3_key: None,
+			text_preview: None,
+			archive_tree: None,
+			size_bytes: Some(1_572_864),
+		}];
+		let body = enml_to_zola_body(
+			r#"<en-note><en-media type="application/x-msdownload" hash="exe"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+		);
+
+		assert_eq!(
+			body,
+			r#"<a class="attachment" href="setup.exe" download title="Size: 1.5 MiB">setup.exe</a>"#
+		);
+	}
+
+	#[test]
+	fn adds_archive_size_and_file_tree_to_title() {
+		let resources = vec![Resource {
+			hash: "zip".into(),
+			file_name: "archive.zip".into(),
+			original_file_name: None,
+			mime: "application/zip".into(),
+			s3_key: None,
+			text_preview: None,
+			archive_tree: Some(".\n`-- docs\n    `-- readme.txt".into()),
+			size_bytes: Some(2_048),
+		}];
+		let body = enml_to_zola_body(
+			r#"<en-note><en-media type="application/zip" hash="zip"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+		);
+
+		assert!(body.contains("title=\"Size: 2.0 KiB"));
+		assert!(body.contains("Files:"));
+		assert!(body.contains("&#96;-- docs"));
+		assert!(body.contains("&#96;-- readme.txt"));
+		assert!(body.contains(r#"<summary title=""#));
 	}
 }

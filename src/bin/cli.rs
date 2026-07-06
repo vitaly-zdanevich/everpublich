@@ -234,6 +234,7 @@ fn mock_notes() -> Vec<Note> {
                 s3_key: None,
                 text_preview: None,
                 archive_tree: None,
+				size_bytes: None,
             }],
         },
         Note {

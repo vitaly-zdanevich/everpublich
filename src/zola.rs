@@ -1401,6 +1401,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			}],
 		};
 		let posts = notes_to_posts(&[note], true);

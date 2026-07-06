@@ -20,6 +20,7 @@ packages:
   - poppler-utils
   - pkg-config
   - sqlite3
+  - tree
   - unzip
   - xz-utils
   - zstd
@@ -101,7 +102,7 @@ write_files:
           sync_errors='1'
         fi
         /opt/everpublich/bin/publish-everpublich-metrics "$notebooks" "$notes" "$built" "$failed" "$sync_errors" || true
-        grep -E '^SiteGenerationSeconds	' "$rebuild_log" | while IFS=$'\t' read -r metric site seconds; do
+        awk 'index($0, "SiteGenerationSeconds\t") == 1 { print }' "$rebuild_log" | while IFS=$'\t' read -r metric site seconds; do
           if [ "$metric" = 'SiteGenerationSeconds' ] && [ -n "$site" ] && [ -n "$seconds" ]; then
             /opt/everpublich/bin/publish-site-generation-metric "$site" "$seconds" || true
           fi
@@ -239,25 +240,25 @@ write_files:
       set -euo pipefail
 
       if command -v aws >/dev/null; then
-      	exit 0
+              exit 0
       fi
 
       case "$(uname -m)" in
-      	x86_64)
-      		awscli_arch='x86_64'
-      		;;
-      	aarch64)
-      		awscli_arch='aarch64'
-      		;;
-      	*)
-      		echo "Unsupported AWS CLI architecture: $(uname -m)" >&2
-      		exit 1
-      		;;
+              x86_64)
+                      awscli_arch='x86_64'
+                      ;;
+              aarch64)
+                      awscli_arch='aarch64'
+                      ;;
+              *)
+                      echo "Unsupported AWS CLI architecture: $(uname -m)" >&2
+                      exit 1
+                      ;;
       esac
 
       work_dir="$(mktemp -d)"
       cleanup() {
-      	rm -rf "$work_dir"
+              rm -rf "$work_dir"
       }
       trap cleanup EXIT
 
@@ -340,26 +341,26 @@ write_files:
       set -euo pipefail
 
       if [ -x /opt/firefox/firefox ]; then
-      	ln -sfn /opt/firefox/firefox /usr/local/bin/firefox
-      	exit 0
+              ln -sfn /opt/firefox/firefox /usr/local/bin/firefox
+              exit 0
       fi
 
       case "$(uname -m)" in
-      	x86_64)
-      		firefox_os='linux64'
-      		;;
-      	aarch64)
-      		firefox_os='linux-aarch64'
-      		;;
-      	*)
-      		echo "Unsupported Firefox architecture: $(uname -m)" >&2
-      		exit 1
-      		;;
+              x86_64)
+                      firefox_os='linux64'
+                      ;;
+              aarch64)
+                      firefox_os='linux-aarch64'
+                      ;;
+              *)
+                      echo "Unsupported Firefox architecture: $(uname -m)" >&2
+                      exit 1
+                      ;;
       esac
 
       work_dir="$(mktemp -d)"
       cleanup() {
-      	rm -rf "$work_dir"
+              rm -rf "$work_dir"
       }
       trap cleanup EXIT
 
@@ -402,12 +403,12 @@ write_files:
       xpra_index='/usr/share/xpra/www/index.html'
       xpra_server_config='/etc/xpra/conf.d/60_server.conf'
       if [ -f "$xpra_server_config" ] && ! grep -q 'everpublich: disabled default Xsession' "$xpra_server_config"; then
-      	cp -a "$xpra_server_config" "$xpra_server_config.everpublich-backup"
-      	perl -0pi -e 's/^start = \/etc\/X11\/Xsession true$/# everpublich: disabled default Xsession\n# start = \/etc\/X11\/Xsession true/m' "$xpra_server_config"
+              cp -a "$xpra_server_config" "$xpra_server_config.everpublich-backup"
+              perl -0pi -e 's/^start = \/etc\/X11\/Xsession true$/# everpublich: disabled default Xsession\n# start = \/etc\/X11\/Xsession true/m' "$xpra_server_config"
       fi
 
       if [ ! -f "$xpra_index" ] || grep -q 'data-everpublich-disable-pasteboard' "$xpra_index"; then
-      	exit 0
+              exit 0
       fi
 
       cp -a "$xpra_index" "$xpra_index.everpublich-backup"
@@ -429,7 +430,7 @@ write_files:
       app_dir='/opt/everpublich/app'
 
       cleanup() {
-      	rm -rf "$work_dir"
+              rm -rf "$work_dir"
       }
       trap cleanup EXIT
 
@@ -441,20 +442,20 @@ write_files:
       tag_name="$(jq -r '.tag_name' "$release_json")"
 
       if [ -z "$asset_name" ] || [ -z "$asset_url" ] || [ "$asset_name" = 'null' ] || [ "$asset_url" = 'null' ]; then
-      	echo "No non-black Evernote AppImage asset matched regex: $asset_regex" >&2
-      	exit 1
+              echo "No non-black Evernote AppImage asset matched regex: $asset_regex" >&2
+              exit 1
       fi
 
       curl -fL "$asset_url" -o "$work_dir/$asset_name"
 
       sha_url="$(jq -r '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url' "$release_json" | head -n 1)"
       if [ -n "$sha_url" ] && [ "$sha_url" != 'null' ]; then
-      	curl -fsSL "$sha_url" -o "$work_dir/SHA256SUMS"
-      	if grep -F "  $asset_name" "$work_dir/SHA256SUMS" > "$work_dir/SHA256SUMS.selected"; then
-      		(cd "$work_dir" && sha256sum -c SHA256SUMS.selected)
-      	else
-      		echo "SHA256SUMS did not include $asset_name; continuing without checksum verification" >&2
-      	fi
+              curl -fsSL "$sha_url" -o "$work_dir/SHA256SUMS"
+              if grep -F "  $asset_name" "$work_dir/SHA256SUMS" > "$work_dir/SHA256SUMS.selected"; then
+                      (cd "$work_dir" && sha256sum -c SHA256SUMS.selected)
+              else
+                      echo "SHA256SUMS did not include $asset_name; continuing without checksum verification" >&2
+              fi
       fi
 
       install -o root -g root -m 0755 "$work_dir/$asset_name" "$app_dir/Evernote.AppImage"
@@ -463,10 +464,10 @@ write_files:
       mv "$work_dir/squashfs-root" "$app_dir/Evernote.AppDir"
       chmod 0755 "$app_dir/Evernote.AppDir/AppRun"
       {
-      	printf "EVERNOTE_APPIMAGE_REPOSITORY='%s'\n" "$repo"
-      	printf "EVERNOTE_APPIMAGE_TAG='%s'\n" "$tag_name"
-      	printf "EVERNOTE_APPIMAGE_ASSET='%s'\n" "$asset_name"
-      	printf "EVERNOTE_APPIMAGE_URL='%s'\n" "$asset_url"
+              printf "EVERNOTE_APPIMAGE_REPOSITORY='%s'\n" "$repo"
+              printf "EVERNOTE_APPIMAGE_TAG='%s'\n" "$tag_name"
+              printf "EVERNOTE_APPIMAGE_ASSET='%s'\n" "$asset_name"
+              printf "EVERNOTE_APPIMAGE_URL='%s'\n" "$asset_url"
       } > "$app_dir/installed-release.env"
       chown -R root:root "$app_dir"
       echo "Installed $asset_name from $tag_name"
@@ -493,40 +494,40 @@ write_files:
       mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$HOME/.config/Evernote"
 
       if [ ! -x /opt/everpublich/app/Evernote.AppDir/AppRun ]; then
-      	echo 'Extracted Evernote AppDir is not installed at /opt/everpublich/app/Evernote.AppDir/AppRun' >&2
-      	exit 1
+              echo 'Extracted Evernote AppDir is not installed at /opt/everpublich/app/Evernote.AppDir/AppRun' >&2
+              exit 1
       fi
 
       if [ "$DISPLAY" = ':99' ]; then
-      	if ! pgrep -u "$(id -u)" -f "Xvfb $DISPLAY" >/dev/null; then
-      		Xvfb "$DISPLAY" -screen 0 1600x1000x24 -nolisten tcp &
-      		sleep 2
-      	fi
+              if ! pgrep -u "$(id -u)" -f "Xvfb $DISPLAY" >/dev/null; then
+                      Xvfb "$DISPLAY" -screen 0 1600x1000x24 -nolisten tcp &
+                      sleep 2
+              fi
 
-      	if command -v openbox >/dev/null && ! pgrep -u "$(id -u)" -x openbox >/dev/null; then
-      		openbox >/var/cache/everpublich/openbox.log 2>&1 &
-      	fi
+              if command -v openbox >/dev/null && ! pgrep -u "$(id -u)" -x openbox >/dev/null; then
+                      openbox >/var/cache/everpublich/openbox.log 2>&1 &
+              fi
       fi
 
       exec dbus-run-session -- bash -lc '
-      	if command -v gnome-keyring-daemon >/dev/null; then
-      		keyring_env="$(gnome-keyring-daemon --start --components=secrets 2>/dev/null || true)"
-      		if [ -n "$keyring_env" ]; then
-      			eval "$keyring_env"
-      			export GNOME_KEYRING_CONTROL
-      		fi
-      	fi
-      	exec /opt/everpublich/app/Evernote.AppDir/AppRun \
-      		--no-sandbox \
-      		--disable-gpu \
-      		--disable-gpu-sandbox \
-      		--disable-gpu-compositing \
-      		--disable-dev-shm-usage \
-      		--disable-vulkan \
-      		--js-flags=--max-old-space-size=4096 \
-      		--use-gl=swiftshader \
-      		--ozone-platform=x11 \
-      		--disable-features=UseOzonePlatform,Vulkan,UseSkiaRenderer,CanvasOopRasterization
+              if command -v gnome-keyring-daemon >/dev/null; then
+                      keyring_env="$(gnome-keyring-daemon --start --components=secrets 2>/dev/null || true)"
+                      if [ -n "$keyring_env" ]; then
+                              eval "$keyring_env"
+                              export GNOME_KEYRING_CONTROL
+                      fi
+              fi
+              exec /opt/everpublich/app/Evernote.AppDir/AppRun \
+                      --no-sandbox \
+                      --disable-gpu \
+                      --disable-gpu-sandbox \
+                      --disable-gpu-compositing \
+                      --disable-dev-shm-usage \
+                      --disable-vulkan \
+                      --js-flags=--max-old-space-size=4096 \
+                      --use-gl=swiftshader \
+                      --ozone-platform=x11 \
+                      --disable-features=UseOzonePlatform,Vulkan,UseSkiaRenderer,CanvasOopRasterization
       '
   - path: /opt/everpublich/bin/evernote-run-ssh-x
     owner: root:root
@@ -541,8 +542,8 @@ write_files:
       fi
 
       if ! command -v xauth >/dev/null; then
-      	echo 'xauth is not installed on the VM' >&2
-      	exit 2
+              echo 'xauth is not installed on the VM' >&2
+              exit 2
       fi
 
       sudo systemctl stop evernote-client.service || true
@@ -551,15 +552,15 @@ write_files:
       sudo install -o everpublich -g everpublich -m 0600 /dev/null /run/everpublich/ssh-xauthority
 
       if ! xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' | sudo -H -u everpublich env XAUTHORITY=/run/everpublich/ssh-xauthority xauth nmerge -; then
-      	echo 'Failed to copy the SSH X forwarding cookie for the everpublich user' >&2
-      	exit 1
+              echo 'Failed to copy the SSH X forwarding cookie for the everpublich user' >&2
+              exit 1
       fi
 
-	      sudo -H -u everpublich env \
-	      	DISPLAY="$DISPLAY" \
-	      	XAUTHORITY=/run/everpublich/ssh-xauthority \
-	      	XDG_RUNTIME_DIR=/run/everpublich \
-	      	/opt/everpublich/bin/evernote-run
+              sudo -H -u everpublich env \
+                      DISPLAY="$DISPLAY" \
+                      XAUTHORITY=/run/everpublich/ssh-xauthority \
+                      XDG_RUNTIME_DIR=/run/everpublich \
+                      /opt/everpublich/bin/evernote-run
   - path: /opt/everpublich/bin/evernote-run-xpra
     owner: root:root
     permissions: '0755'
@@ -572,10 +573,10 @@ write_files:
       public_host=''
       metadata_token="$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)"
       if [ -n "$metadata_token" ]; then
-      	public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
+              public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
       fi
       if [ -z "$public_host" ]; then
-      	public_host='EC2_HOST'
+              public_host='EC2_HOST'
       fi
 
       sudo systemctl stop evernote-client.service || true
@@ -587,25 +588,25 @@ write_files:
 
       sudo -H -u everpublich env HOME=/var/lib/everpublich XDG_RUNTIME_DIR="$runtime_dir" xpra stop "$display" >/dev/null 2>&1 || true
       sudo -H -u everpublich env HOME=/var/lib/everpublich XDG_RUNTIME_DIR="$runtime_dir" xpra start "$display" \
-      	--bind-tcp="127.0.0.1:$port" \
-      	--html=on \
-      	--tcp-auth=none \
-      	--clipboard=no \
-      	--chdir=/var/lib/everpublich \
-      	--mdns=no \
-      	--notifications=no \
-      	--pulseaudio=no \
-      	--bell=no \
-      	--printing=no \
-      	--file-transfer=no \
-      	--open-files=no \
-      	--open-url=no \
-      	--webcam=no \
-      	--systemd-run=no \
-      	--daemon=yes \
-      	--log-dir=/var/cache/everpublich/xpra \
-      	--log-file=evernote-xpra.log \
-      	--start=/opt/everpublich/bin/evernote-run
+              --bind-tcp="127.0.0.1:$port" \
+              --html=on \
+              --tcp-auth=none \
+              --clipboard=no \
+              --chdir=/var/lib/everpublich \
+              --mdns=no \
+              --notifications=no \
+              --pulseaudio=no \
+              --bell=no \
+              --printing=no \
+              --file-transfer=no \
+              --open-files=no \
+              --open-url=no \
+              --webcam=no \
+              --systemd-run=no \
+              --daemon=yes \
+              --log-dir=/var/cache/everpublich/xpra \
+              --log-file=evernote-xpra.log \
+              --start=/opt/everpublich/bin/evernote-run
 
       cat <<EOF
       Xpra started Evernote on EC2 display $display.
@@ -654,14 +655,14 @@ write_files:
       public_host=''
       metadata_token="$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)"
       if [ -n "$metadata_token" ]; then
-      	public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
+              public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
       fi
       if [ -z "$public_host" ]; then
-      	public_host='EC2_HOST'
+              public_host='EC2_HOST'
       fi
 
       if ! systemctl is-active --quiet evernote-client.service; then
-      	sudo systemctl start evernote-client.service
+              sudo systemctl start evernote-client.service
       fi
 
       sudo pkill -u everpublich -f "x11vnc.*$display" || true
@@ -669,28 +670,28 @@ write_files:
       sudo install -d -o everpublich -g everpublich -m 0700 /var/cache/everpublich/novnc
 
       for attempt in $(seq 1 100); do
-      	if sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" xdpyinfo >/dev/null 2>&1; then
-      		break
-      	fi
-      	sleep 0.2
+              if sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" xdpyinfo >/dev/null 2>&1; then
+                      break
+              fi
+              sleep 0.2
       done
 
       sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" sh -c "nohup x11vnc -display '$display' -localhost -rfbport '$vnc_port' -nopw -forever -shared -noxdamage -repeat >/var/cache/everpublich/novnc/keyring-x11vnc.log 2>&1 &"
 
       for attempt in $(seq 1 50); do
-      	if ss -ltn | grep -q "127.0.0.1:$vnc_port"; then
-      		break
-      	fi
-      	sleep 0.2
+              if ss -ltn | grep -q "127.0.0.1:$vnc_port"; then
+                      break
+              fi
+              sleep 0.2
       done
 
       sudo -H -u everpublich env HOME=/var/lib/everpublich sh -c "nohup websockify --web=/usr/share/novnc '127.0.0.1:$web_port' '127.0.0.1:$vnc_port' >/var/cache/everpublich/novnc/keyring-websockify.log 2>&1 &"
 
       for attempt in $(seq 1 50); do
-      	if ss -ltn | grep -q "127.0.0.1:$web_port"; then
-      		break
-      	fi
-      	sleep 0.2
+              if ss -ltn | grep -q "127.0.0.1:$web_port"; then
+                      break
+              fi
+              sleep 0.2
       done
 
       cat <<EOF
@@ -717,10 +718,10 @@ write_files:
       public_host=''
       metadata_token="$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)"
       if [ -n "$metadata_token" ]; then
-      	public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
+              public_host="$(curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/public-hostname 2>/dev/null || true)"
       fi
       if [ -z "$public_host" ]; then
-      	public_host='EC2_HOST'
+              public_host='EC2_HOST'
       fi
 
       sudo systemctl stop evernote-client.service || true
@@ -738,10 +739,10 @@ write_files:
       sudo -H -u everpublich env HOME=/var/lib/everpublich XDG_RUNTIME_DIR="$runtime_dir" sh -c "nohup Xvfb '$display' -screen 0 1440x900x24 -nolisten tcp -ac >/var/cache/everpublich/novnc/xvfb.log 2>&1 &"
 
       for attempt in $(seq 1 100); do
-      	if sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" xdpyinfo >/dev/null 2>&1; then
-      		break
-      	fi
-      	sleep 0.2
+              if sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" xdpyinfo >/dev/null 2>&1; then
+                      break
+              fi
+              sleep 0.2
       done
 
       sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" XDG_RUNTIME_DIR="$runtime_dir" sh -c "nohup openbox >/var/cache/everpublich/novnc/openbox.log 2>&1 &"
@@ -749,19 +750,19 @@ write_files:
       sudo -H -u everpublich env HOME=/var/lib/everpublich DISPLAY="$display" XDG_RUNTIME_DIR="$runtime_dir" sh -c "nohup x11vnc -display '$display' -localhost -rfbport '$vnc_port' -nopw -forever -shared -noxdamage -repeat >/var/cache/everpublich/novnc/x11vnc.log 2>&1 &"
 
       for attempt in $(seq 1 50); do
-      	if ss -ltn | grep -q "127.0.0.1:$vnc_port"; then
-      		break
-      	fi
-      	sleep 0.2
+              if ss -ltn | grep -q "127.0.0.1:$vnc_port"; then
+                      break
+              fi
+              sleep 0.2
       done
 
       sudo -H -u everpublich env HOME=/var/lib/everpublich sh -c "nohup websockify --web=/usr/share/novnc '127.0.0.1:$web_port' '127.0.0.1:$vnc_port' >/var/cache/everpublich/novnc/websockify.log 2>&1 &"
 
       for attempt in $(seq 1 50); do
-      	if ss -ltn | grep -q "127.0.0.1:$web_port"; then
-      		break
-      	fi
-      	sleep 0.2
+              if ss -ltn | grep -q "127.0.0.1:$web_port"; then
+                      break
+              fi
+              sleep 0.2
       done
 
       cat <<EOF
@@ -785,8 +786,8 @@ write_files:
       set -euo pipefail
 
       if [ -z "$${DISPLAY:-}" ]; then
-      	echo 'SSH X forwarding is not active. Reconnect with: ssh -Y ubuntu@EC2_HOST' >&2
-      	exit 2
+              echo 'SSH X forwarding is not active. Reconnect with: ssh -Y ubuntu@EC2_HOST' >&2
+              exit 2
       fi
 
       xdpyinfo >/tmp/everpublich-xdpyinfo.txt

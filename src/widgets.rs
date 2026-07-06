@@ -1,5 +1,6 @@
 //! Expand supported external links into static-site widgets.
 
+use chrono::{DateTime, Utc};
 use html_escape::{decode_html_entities, encode_double_quoted_attribute, encode_text};
 use percent_encoding::{
 	AsciiSet, CONTROLS, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode,
@@ -1511,6 +1512,9 @@ fn link_title(url: &Url) -> Option<String> {
 	}
 	if telegram_channel(url).is_some() {
 		return cached_url_title(url.as_str(), || telegram_channel_title(url));
+	}
+	if stackoverflow_question_id(url).is_some() {
+		return cached_url_title(url.as_str(), || stackoverflow_title(url));
 	}
 	None
 }
@@ -3259,6 +3263,96 @@ fn telegram_channel_description(html: &str) -> Option<String> {
 	.and_then(|description| compact_title_text(&description))
 }
 
+fn stackoverflow_title(url: &Url) -> Option<String> {
+	let question_id = stackoverflow_question_id(url)?;
+	let response: Value = metadata_client()?
+		.get(format!(
+			"https://api.stackexchange.com/2.3/questions/{question_id}"
+		))
+		.query(&[("site", "stackoverflow")])
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()
+		.and_then(|body| serde_json::from_str(&body).ok())?;
+	let question = response["items"].as_array()?.first()?;
+	stackoverflow_title_from_question(question)
+}
+
+fn stackoverflow_question_id(url: &Url) -> Option<u64> {
+	let host = normalized_host(url)?;
+	if host != "stackoverflow.com" {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	match parts.first().map(String::as_str) {
+		Some("questions" | "q") => parts.get(1)?.parse().ok(),
+		_ => None,
+	}
+}
+
+fn stackoverflow_title_from_question(question: &Value) -> Option<String> {
+	let title =
+		json_string(&question["title"]).map(|title| decode_html_entities(&title).to_string())?;
+	let mut lines = vec![format!("Stack Overflow: {title}")];
+	if let Some(score) = json_i64(&question["score"]) {
+		lines.push(format!("Score: {score}"));
+	}
+	if let Some(count) = json_u64(&question["answer_count"]) {
+		lines.push(format!("Answers: {count}"));
+	}
+	if question["accepted_answer_id"].as_i64().is_some() {
+		lines.push("Accepted answer: yes".to_string());
+	} else if let Some(answered) = question["is_answered"].as_bool() {
+		lines.push(format!(
+			"Accepted answer: {}",
+			if answered { "yes" } else { "no" }
+		));
+	}
+	if let Some(count) = json_u64(&question["view_count"]) {
+		lines.push(format!("Views: {count}"));
+	}
+	if let Some(tags) = question["tags"]
+		.as_array()
+		.and_then(|values| json_string_list(values))
+	{
+		lines.push(format!("Tags: {tags}"));
+	}
+	if let Some(owner) = json_string(&question["owner"]["display_name"]) {
+		lines.push(format!("Asked by: {owner}"));
+	}
+	if let Some(created) = json_u64(&question["creation_date"]).and_then(format_stackexchange_date)
+	{
+		lines.push(format!("Created: {created}"));
+	}
+	if let Some(activity) =
+		json_u64(&question["last_activity_date"]).and_then(format_stackexchange_date)
+	{
+		lines.push(format!("Last activity: {activity}"));
+	}
+	Some(lines.join("\n"))
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+	match value {
+		Value::Number(number) => number.as_i64(),
+		Value::String(value) => value.parse().ok(),
+		_ => None,
+	}
+}
+
+fn json_string_list(values: &[Value]) -> Option<String> {
+	let list = values.iter().filter_map(json_string).collect::<Vec<_>>();
+	(!list.is_empty()).then(|| list.join(", "))
+}
+
+fn format_stackexchange_date(timestamp: u64) -> Option<String> {
+	let timestamp = i64::try_from(timestamp).ok()?;
+	DateTime::<Utc>::from_timestamp(timestamp, 0).map(|date| date.format("%Y-%m-%d").to_string())
+}
+
 fn first_capture(html: &str, pattern: &str) -> Option<String> {
 	let caps = Regex::new(pattern).ok()?.captures(html)?;
 	(1..caps.len())
@@ -4069,6 +4163,35 @@ mod tests {
 				"Telegram channel: Telegram News\nSubscribers: 10 169 937\nDescription: The official Telegram on Telegram."
 			)
 		);
+	}
+
+	#[test]
+	fn builds_stackoverflow_question_title() {
+		let question =
+			Url::parse("https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array")
+				.unwrap();
+		let short = Url::parse("https://stackoverflow.com/q/11227809").unwrap();
+		assert_eq!(stackoverflow_question_id(&question), Some(11_227_809));
+		assert_eq!(stackoverflow_question_id(&short), Some(11_227_809));
+
+		let metadata = serde_json::json!({
+			"title": "Why is processing a sorted array faster than processing an unsorted array?",
+			"score": 27804,
+			"answer_count": 28,
+			"accepted_answer_id": 11227902,
+			"view_count": 1960000,
+			"tags": ["java", "c++", "performance"],
+			"owner": {"display_name": "GManNickG"},
+			"creation_date": 1339078386,
+			"last_activity_date": 1710000000
+		});
+		let title = stackoverflow_title_from_question(&metadata).unwrap();
+		assert!(title.contains("Stack Overflow: Why is processing"));
+		assert!(title.contains("Score: 27804"));
+		assert!(title.contains("Answers: 28"));
+		assert!(title.contains("Accepted answer: yes"));
+		assert!(title.contains("Tags: java, c++, performance"));
+		assert!(title.contains("Created: 2012-06-07"));
 	}
 
 	#[test]

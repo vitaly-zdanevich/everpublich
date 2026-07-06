@@ -1,8 +1,11 @@
-<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' role='img' aria-label='Everpublich'>
-	<rect width='64' height='64' rx='14' fill='#050505'/>
-	<path d='M19 13h20l10 10v28H19z' fill='#f7f4ec'/>
-	<path d='M39 13v11h10z' fill='#d8cdb8'/>
-	<path d='M25 29h16M25 37h14M25 45h10' stroke='#156b54' stroke-width='4' stroke-linecap='round'/>
-	<circle cx='46' cy='46' r='8' fill='#2bb673'/>
-	<path d='M42 46l3 3 6-7' fill='none' stroke='#050505' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128' role='img' aria-label='Everpublich'>
+	<rect width='128' height='128' rx='24' fill='#050505'/>
+	<path d='M23 10h58l24 24v84H23z' fill='#f7f4ec'/>
+	<path d='M81 10v25h24z' fill='#d8cdb8'/>
+	<rect x='39' y='39' width='15' height='52' rx='4' fill='#156b54'/>
+	<rect x='39' y='39' width='45' height='15' rx='4' fill='#156b54'/>
+	<rect x='39' y='59' width='36' height='15' rx='4' fill='#156b54'/>
+	<rect x='39' y='79' width='45' height='15' rx='4' fill='#156b54'/>
+	<circle cx='91' cy='91' r='24' fill='#2bb673'/>
+	<path d='M80 91l8 8 16-20' fill='none' stroke='#050505' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/>
 </svg>

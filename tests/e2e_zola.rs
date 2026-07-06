@@ -69,6 +69,9 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "background-color:#292");
 	assert_contains(&style, "--quote-bg:#eef4eb");
 	assert_contains(&style, "--quote-bg:#0b1510");
+	assert_contains(&style, "--code-bg:#24272a");
+	assert_contains(&style, "pre{background:var(--code-bg)");
+	assert_contains(&style, "code{background:var(--code-bg)");
 	assert_contains(&style, ".broken-link{color:#b00020}");
 	assert_contains(&style, ".broken-link{color:#ff6b7a}");
 	assert_contains(&style, ".internal-link{color:var(--accent)}");
@@ -263,8 +266,10 @@ fn zola_build_renders_public_html() {
 		&media_post,
 		"<details class=\"attachment-preview attachment-preview-archive\">",
 	);
-	assert_contains(&media_post, "<summary>archive.zip</summary>");
-	assert_contains(&media_post, "docs/readme.txt");
+	assert_contains(&media_post, "<summary title=\"Size: 2.0 KiB");
+	assert_contains(&media_post, "Files:");
+	assert_contains(&media_post, "`-- docs");
+	assert_contains(&media_post, "`-- readme.txt");
 
 	let calendar = read(&public, "calendar/index.html");
 	assert_contains(
@@ -508,6 +513,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "pdf".into(),
@@ -517,6 +523,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 			],
 		},
@@ -545,6 +552,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "video".into(),
@@ -554,6 +562,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "swf".into(),
@@ -563,6 +572,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "midi".into(),
@@ -572,6 +582,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "epub".into(),
@@ -581,6 +592,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "cbz".into(),
@@ -590,6 +602,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "font".into(),
@@ -599,6 +612,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "ai".into(),
@@ -608,6 +622,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "glb".into(),
@@ -617,6 +632,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "stl".into(),
@@ -626,6 +642,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "obj".into(),
@@ -635,6 +652,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "text".into(),
@@ -644,6 +662,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("# Notes\n\nHello".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "sub".into(),
@@ -653,6 +672,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("1\n00:00:00,000 --> 00:00:02,000\nHello".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "log".into(),
@@ -662,6 +682,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("Started".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "csv".into(),
@@ -671,6 +692,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("name,value\nok,true".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "json".into(),
@@ -680,6 +702,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("{\"ok\": true}".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "yaml".into(),
@@ -689,6 +712,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("ok: true".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "xml".into(),
@@ -698,6 +722,7 @@ fn note_fixtures() -> Vec<Note> {
 					s3_key: None,
 					text_preview: Some("<ok>true</ok>".into()),
 					archive_tree: None,
+				size_bytes: None,
 				},
 				Resource {
 					hash: "zip".into(),
@@ -706,7 +731,8 @@ fn note_fixtures() -> Vec<Note> {
 					mime: "application/zip".into(),
 					s3_key: None,
 					text_preview: None,
-					archive_tree: Some("docs/\ndocs/readme.txt".into()),
+					archive_tree: Some(".\n`-- docs\n    `-- readme.txt".into()),
+					size_bytes: Some(2_048),
 				},
 			],
 		},

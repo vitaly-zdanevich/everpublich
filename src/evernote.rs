@@ -648,6 +648,7 @@ mod tests {
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
+					size_bytes: None,
 				}],
 			},
 		];
@@ -677,6 +678,7 @@ mod tests {
 				s3_key: None,
 				text_preview: None,
 				archive_tree: None,
+				size_bytes: None,
 			}],
 		};
 		let post = notes_to_posts(&[note], true).remove(0);
