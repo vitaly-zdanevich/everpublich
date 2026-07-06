@@ -34,6 +34,7 @@ sha1 = "0.10"
 tempfile = "3"
 thrift = "0.17"
 url = "2"
+yrs = "0.27"
 
 [dev-dependencies]
 pretty_assertions = "1"

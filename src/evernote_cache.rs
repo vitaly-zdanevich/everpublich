@@ -22,6 +22,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use yrs::types::text::YChange;
+use yrs::updates::decoder::Decode;
+use yrs::{
+	Any, Doc, Out, ReadTxn, Text, Transact, Update, Xml, XmlElementRef, XmlFragment,
+	XmlFragmentRef, XmlOut, XmlTextRef,
+};
 
 /// Runtime inputs for rebuilding every generated website.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +95,13 @@ struct CacheNoteRow {
 	updated_millis: i64,
 	content: String,
 	snippet: String,
+	source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RteNoteContent {
+	enml: Option<String>,
+	text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -310,7 +323,7 @@ fn read_notes_for_notebook(
 ) -> Result<Vec<CachedNote>> {
 	let mut stmt = cache_db.prepare(
 		"select n.id, n.label, n.created, n.updated, \
-		 coalesce(c.content, ''), coalesce(n.snippet, '') \
+		 coalesce(c.content, ''), coalesce(n.snippet, ''), n.source_URL \
 		 from Nodes_Note n \
 		 left join Offline_Search_Note_Content c on c.id = n.id \
 		 where n.deleted is null and n.parent_Notebook_id = ?1 \
@@ -325,6 +338,7 @@ fn read_notes_for_notebook(
 				updated_millis: row.get(3)?,
 				content: row.get(4)?,
 				snippet: row.get(5)?,
+				source_url: row.get(6)?,
 			})
 		})?
 		.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -337,10 +351,26 @@ fn read_notes_for_notebook(
 				.iter()
 				.map(|attachment| attachment.resource.clone())
 				.collect::<Vec<_>>();
-			let rte_text = read_note_rte_text(config_dir, &row.id, &row.title)?;
-			let plain_text = note_plain_text(&row.content, &row.snippet, rte_text.as_deref());
+			let rte_content = read_note_rte_content(config_dir, &row.id, &row.title)?;
+			let plain_text =
+				note_plain_text(&row.content, &row.snippet, rte_content.text.as_deref());
 			let (body_text, content_metadata) = extract_trailing_content_metadata(&plain_text);
 			extend_unique_tags(&mut tags, content_metadata.tags);
+			let source_url = row
+				.source_url
+				.as_deref()
+				.filter(|url| !url.trim().is_empty())
+				.or(content_metadata.source_url.as_deref());
+			let enml = if let Some(rte_enml) = rte_content.enml {
+				rich_text_to_enml(
+					&rte_enml,
+					content_metadata.raw_line.as_deref(),
+					source_url,
+					&resources,
+				)
+			} else {
+				plain_text_to_enml(&body_text, source_url, &resources)
+			};
 			let files = attachments
 				.into_iter()
 				.filter_map(|attachment| {
@@ -358,11 +388,7 @@ fn read_notes_for_notebook(
 					title: clean_title(&row.title),
 					created: evernote_millis_to_utc(row.created_millis)?,
 					updated: evernote_millis_to_utc(row.updated_millis)?,
-					enml: plain_text_to_enml(
-						&body_text,
-						content_metadata.source_url.as_deref(),
-						&resources,
-					),
+					enml,
 					resources,
 					tags,
 				},
@@ -469,12 +495,14 @@ fn find_cached_resource_file(config_dir: &Path, hash: &str) -> Result<Option<Pat
 	Ok(None)
 }
 
-fn read_note_rte_text(config_dir: &Path, note_id: &str, title: &str) -> Result<Option<String>> {
+fn read_note_rte_content(config_dir: &Path, note_id: &str, title: &str) -> Result<RteNoteContent> {
 	let Some(path) = find_note_rte_doc_file(config_dir, note_id)? else {
-		return Ok(None);
+		return Ok(RteNoteContent::default());
 	};
 	let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-	Ok(extract_rte_doc_text(&bytes, title))
+	let enml = rte_doc_to_enml(&bytes).ok().flatten();
+	let text = extract_rte_doc_text(&bytes, title);
+	Ok(RteNoteContent { enml, text })
 }
 
 fn find_note_rte_doc_file(config_dir: &Path, note_id: &str) -> Result<Option<PathBuf>> {
@@ -530,6 +558,159 @@ fn extract_rte_doc_text(bytes: &[u8], title: &str) -> Option<String> {
 
 	candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.chars().count()));
 	candidates.into_iter().next()
+}
+
+/// Decode an Evernote rich-text cache document into ENML.
+///
+/// The official desktop client stores note bodies as Yjs XML updates. We use
+/// `yrs` to read that tree and then serialize the `content` XML fragment into
+/// the ENML subset consumed by the existing Zola renderer.
+fn rte_doc_to_enml(bytes: &[u8]) -> Result<Option<String>> {
+	match rte_doc_to_enml_with_decoder(bytes, Update::decode_v1) {
+		Ok(enml) => Ok(enml),
+		Err(v1_error) => rte_doc_to_enml_with_decoder(bytes, Update::decode_v2)
+			.with_context(|| format!("failed to decode Evernote RTE Yjs update: {v1_error}")),
+	}
+}
+
+fn rte_doc_to_enml_with_decoder(
+	bytes: &[u8],
+	decode: fn(&[u8]) -> Result<Update, yrs::encoding::read::Error>,
+) -> Result<Option<String>> {
+	let doc = Doc::new();
+	let content = doc.get_or_insert_xml_fragment("content");
+	let update = decode(bytes)?;
+	doc.transact_mut().apply_update(update)?;
+	let txn = doc.transact();
+	let enml = serialize_xml_fragment(&content, &txn);
+	if enml.trim().is_empty() {
+		Ok(None)
+	} else {
+		Ok(Some(enml))
+	}
+}
+
+fn serialize_xml_fragment<T: ReadTxn>(fragment: &XmlFragmentRef, txn: &T) -> String {
+	let mut out = String::new();
+	for node in fragment.children(txn) {
+		serialize_xml_out(node, txn, &mut out);
+	}
+	out
+}
+
+fn serialize_xml_out<T: ReadTxn>(node: XmlOut, txn: &T, out: &mut String) {
+	match node {
+		XmlOut::Element(element) => serialize_xml_element(&element, txn, out),
+		XmlOut::Fragment(fragment) => out.push_str(&serialize_xml_fragment(&fragment, txn)),
+		XmlOut::Text(text) => serialize_xml_text(&text, txn, out),
+	}
+}
+
+fn serialize_xml_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, out: &mut String) {
+	let tag = element.tag();
+	let mut attributes = element
+		.attributes(txn)
+		.map(|(key, value)| (key.to_string(), value.to_string(txn)))
+		.collect::<Vec<_>>();
+	attributes.sort_by(|left, right| left.0.cmp(&right.0));
+	let children = element.children(txn).collect::<Vec<_>>();
+
+	out.push('<');
+	out.push_str(tag);
+	for (key, value) in attributes {
+		out.push(' ');
+		out.push_str(&key);
+		out.push_str("=\"");
+		out.push_str(&encode_double_quoted_attribute(&value));
+		out.push('"');
+	}
+
+	if children.is_empty() && is_self_closing_enml_tag(tag) {
+		out.push_str("/>");
+		return;
+	}
+
+	out.push('>');
+	for child in children {
+		serialize_xml_out(child, txn, out);
+	}
+	out.push_str("</");
+	out.push_str(tag);
+	out.push('>');
+}
+
+fn serialize_xml_text<T: ReadTxn>(text: &XmlTextRef, txn: &T, out: &mut String) {
+	for diff in text.diff(txn, YChange::identity) {
+		let attributes = diff
+			.attributes
+			.as_deref()
+			.map(sorted_text_attributes)
+			.unwrap_or_default();
+		for (key, value) in &attributes {
+			push_text_format_start(out, key, value);
+		}
+		serialize_text_insert(diff.insert, txn, out);
+		for (key, _) in attributes.iter().rev() {
+			out.push_str("</");
+			out.push_str(key);
+			out.push('>');
+		}
+	}
+}
+
+fn serialize_text_insert<T: ReadTxn>(insert: Out, txn: &T, out: &mut String) {
+	match insert {
+		Out::Any(Any::String(value)) => out.push_str(&encode_text(value.as_ref())),
+		Out::Any(value) => out.push_str(&encode_text(&value.to_string())),
+		Out::YXmlElement(element) => serialize_xml_element(&element, txn, out),
+		Out::YXmlFragment(fragment) => out.push_str(&serialize_xml_fragment(&fragment, txn)),
+		Out::YXmlText(text) => serialize_xml_text(&text, txn, out),
+		other => out.push_str(&encode_text(&other.to_string(txn))),
+	}
+}
+
+fn sorted_text_attributes(attributes: &yrs::types::Attrs) -> Vec<(&str, &Any)> {
+	let mut items = attributes
+		.iter()
+		.filter(|(_, value)| !matches!(value, Any::Null | Any::Undefined | Any::Bool(false)))
+		.map(|(key, value)| (key.as_ref(), value))
+		.collect::<Vec<_>>();
+	items.sort_by(|left, right| left.0.cmp(right.0));
+	items
+}
+
+fn push_text_format_start(out: &mut String, tag: &str, value: &Any) {
+	out.push('<');
+	out.push_str(tag);
+	if let Any::Map(attributes) = value {
+		let mut attributes = attributes.iter().collect::<Vec<_>>();
+		attributes.sort_by(|left, right| left.0.cmp(right.0));
+		for (key, value) in attributes {
+			out.push(' ');
+			out.push_str(key);
+			out.push_str("=\"");
+			out.push_str(&encode_double_quoted_attribute(&value.to_string()));
+			out.push('"');
+		}
+	}
+	out.push('>');
+}
+
+fn is_self_closing_enml_tag(tag: &str) -> bool {
+	matches!(
+		tag,
+		"area"
+			| "base" | "br"
+			| "col" | "embed"
+			| "en-crypt"
+			| "en-media"
+			| "en-todo"
+			| "hr" | "img"
+			| "input" | "link"
+			| "meta" | "param"
+			| "source"
+			| "track" | "wbr"
+	)
 }
 
 fn printable_runs(bytes: &[u8]) -> Vec<String> {
@@ -845,6 +1026,7 @@ fn note_plain_text(content: &str, snippet: &str, rte_text: Option<&str>) -> Stri
 struct ContentMetadata {
 	tags: Vec<String>,
 	source_url: Option<String>,
+	raw_line: Option<String>,
 }
 
 /// Split a final metadata line from the rendered body.
@@ -861,6 +1043,8 @@ fn extract_trailing_content_metadata(text: &str) -> (String, ContentMetadata) {
 	if metadata.tags.is_empty() && metadata.source_url.is_none() {
 		return (text.into(), ContentMetadata::default());
 	}
+	let mut metadata = metadata;
+	metadata.raw_line = Some(lines[tag_line_index].trim().to_string());
 	lines.remove(tag_line_index);
 	while lines.last().is_some_and(|line| line.trim().is_empty()) {
 		lines.pop();
@@ -920,14 +1104,97 @@ fn plain_text_to_enml(text: &str, source_url: Option<&str>, resources: &[Resourc
 		}
 	}
 	for resource in resources {
-		enml.push_str("<p><en-media type=\"");
-		enml.push_str(&encode_double_quoted_attribute(&resource.mime));
-		enml.push_str("\" hash=\"");
-		enml.push_str(&encode_double_quoted_attribute(&resource.hash));
-		enml.push_str("\"/></p>");
+		push_resource_enml(&mut enml, resource);
 	}
 	enml.push_str("</en-note>");
 	enml
+}
+
+fn rich_text_to_enml(
+	rte_enml: &str,
+	metadata_line: Option<&str>,
+	source_url: Option<&str>,
+	resources: &[Resource],
+) -> String {
+	let mut enml = metadata_line
+		.map(|line| strip_trailing_metadata_enml(rte_enml, line))
+		.unwrap_or_else(|| rte_enml.to_string());
+	if let Some(url) = source_url.filter(|url| !url.trim().is_empty()) {
+		enml = prepend_source_url_to_enml(&enml, url);
+	}
+	append_missing_resources_enml(&enml, resources)
+}
+
+fn strip_trailing_metadata_enml(enml: &str, metadata_line: &str) -> String {
+	let encoded_line = encode_text(metadata_line);
+	let escaped_line = regex::escape(encoded_line.as_ref());
+	for tag in ["div", "p"] {
+		let before_close = Regex::new(&format!(
+			r#"(?is)<{tag}\b[^>]*>\s*{escaped_line}\s*</{tag}>\s*(</en-note>\s*)$"#
+		))
+		.unwrap();
+		if before_close.is_match(enml) {
+			return before_close.replace(enml, "$1").into_owned();
+		}
+
+		let at_end = Regex::new(&format!(
+			r#"(?is)<{tag}\b[^>]*>\s*{escaped_line}\s*</{tag}>\s*$"#
+		))
+		.unwrap();
+		if at_end.is_match(enml) {
+			return at_end.replace(enml, "").into_owned();
+		}
+	}
+	enml.to_string()
+}
+
+fn prepend_source_url_to_enml(enml: &str, url: &str) -> String {
+	let mut source = String::new();
+	push_source_url_enml(&mut source, url);
+	let opening_en_note = Regex::new(r#"(?is)<en-note\b[^>]*>"#).unwrap();
+	if let Some(location) = opening_en_note.find(enml) {
+		let mut out = String::with_capacity(enml.len() + source.len());
+		out.push_str(&enml[..location.end()]);
+		out.push_str(&source);
+		out.push_str(&enml[location.end()..]);
+		out
+	} else {
+		format!("<en-note>{source}{enml}</en-note>")
+	}
+}
+
+fn append_missing_resources_enml(enml: &str, resources: &[Resource]) -> String {
+	let lower_enml = enml.to_ascii_lowercase();
+	let mut missing = String::new();
+	for resource in resources {
+		if !lower_enml.contains(&resource.hash.to_ascii_lowercase()) {
+			push_resource_enml(&mut missing, resource);
+		}
+	}
+	if missing.is_empty() {
+		return enml.to_string();
+	}
+
+	let lower = enml.to_ascii_lowercase();
+	if let Some(index) = lower.rfind("</en-note>") {
+		let mut out = String::with_capacity(enml.len() + missing.len());
+		out.push_str(&enml[..index]);
+		out.push_str(&missing);
+		out.push_str(&enml[index..]);
+		out
+	} else {
+		let mut out = enml.to_string();
+		out.push_str(&missing);
+		out
+	}
+}
+
+fn push_resource_enml(enml: &mut String, resource: &Resource) {
+	enml.push_str("<p><en-media type=\"");
+	enml.push_str(&encode_double_quoted_attribute(&resource.mime));
+	enml.push_str("\" hash=\"");
+	enml.push_str(&encode_double_quoted_attribute(&resource.hash));
+	enml.push_str("\"/></p>");
 }
 
 fn push_source_url_enml(enml: &mut String, url: &str) {
@@ -1241,6 +1508,59 @@ mod tests {
 		assert!(enml.contains("```\nUPDATE activities SET tag = replace(tag, 'v', '');\n```"));
 	}
 
+	#[test]
+	fn decodes_rte_yjs_doc_to_enml() {
+		use yrs::{
+			ReadTxn, StateVector, Transact, Xml, XmlElementPrelim, XmlFragment, XmlTextPrelim,
+		};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+		let div = en_note.push_back(&mut txn, XmlElementPrelim::empty("div"));
+		div.insert_attribute(&mut txn, "style", "color: red");
+		div.push_back(&mut txn, XmlTextPrelim::new("Hello <unsafe> & "));
+		let bold = div.push_back(&mut txn, XmlElementPrelim::empty("b"));
+		bold.push_back(&mut txn, XmlTextPrelim::new("bold"));
+		let table = en_note.push_back(&mut txn, XmlElementPrelim::empty("table"));
+		let row = table.push_back(&mut txn, XmlElementPrelim::empty("tr"));
+		let cell = row.push_back(&mut txn, XmlElementPrelim::empty("td"));
+		cell.push_back(&mut txn, XmlTextPrelim::new("cell"));
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains(r#"<div style="color: red">"#));
+		assert!(enml.contains("Hello &lt;unsafe&gt; &amp; "));
+		assert!(enml.contains("<b>bold</b>"));
+		assert!(enml.contains("<table><tr><td>cell</td></tr></table>"));
+	}
+
+	#[test]
+	fn rich_text_enml_removes_metadata_and_keeps_source_and_resources() {
+		let resources = vec![Resource {
+			hash: "abc123".into(),
+			file_name: "voice.mp3".into(),
+			mime: "audio/mpeg".into(),
+			s3_key: None,
+		}];
+		let enml = rich_text_to_enml(
+			r#"<en-note><div>Body</div><div>#postgres slug:body https://example.com/source</div></en-note>"#,
+			Some("#postgres slug:body https://example.com/source"),
+			Some("https://example.com/source"),
+			&resources,
+		);
+
+		assert!(enml.contains(r#"<p><a href="https://example.com/source">"#));
+		assert!(enml.contains("<div>Body</div>"));
+		assert!(!enml.contains("slug:body"));
+		assert!(enml.contains(r#"<en-media type="audio/mpeg" hash="abc123"/>"#));
+	}
+
 	struct CacheFixture {
 		_temp: tempfile::TempDir,
 		config_dir: PathBuf,
@@ -1336,7 +1656,8 @@ mod tests {
 				updated integer not null,
 				deleted integer,
 				parent_Notebook_id text,
-				snippet text
+				snippet text,
+				source_URL text
 			);
 			create table Offline_Search_Note_Content(id text primary key, content text not null);
 			create table Nodes_Tag(id text primary key, label text not null);
@@ -1381,11 +1702,11 @@ mod tests {
 				insert into Nodes_Membership(id, parent_Notebook_id, recipientIsMe)
 				values ('membership-outgoing', 'notebook-outgoing', 0);
 			insert into Nodes_Note(
-				id, label, created, updated, deleted, parent_Notebook_id, snippet
+				id, label, created, updated, deleted, parent_Notebook_id, snippet, source_URL
 			)
 			values (
 				'note-1', 'Hello from cache', 1700000000000, 1700000001000, null,
-				'notebook-1', ''
+				'notebook-1', '', null
 			);
 				insert into Offline_Search_Note_Content(id, content)
 				values ('note-1', '');
