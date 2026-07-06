@@ -16,6 +16,7 @@ use crate::zola::{GeneratedSite, write_zola_site};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
 use html_escape::{encode_double_quoted_attribute, encode_text};
+use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::BTreeSet;
 use std::fs;
@@ -338,8 +339,8 @@ fn read_notes_for_notebook(
 				.collect::<Vec<_>>();
 			let rte_text = read_note_rte_text(config_dir, &row.id, &row.title)?;
 			let plain_text = note_plain_text(&row.content, &row.snippet, rte_text.as_deref());
-			let (body_text, content_tags) = extract_trailing_content_tags(&plain_text);
-			extend_unique_tags(&mut tags, content_tags);
+			let (body_text, content_metadata) = extract_trailing_content_metadata(&plain_text);
+			extend_unique_tags(&mut tags, content_metadata.tags);
 			let files = attachments
 				.into_iter()
 				.filter_map(|attachment| {
@@ -357,7 +358,11 @@ fn read_notes_for_notebook(
 					title: clean_title(&row.title),
 					created: evernote_millis_to_utc(row.created_millis)?,
 					updated: evernote_millis_to_utc(row.updated_millis)?,
-					enml: plain_text_to_enml(&body_text, &resources),
+					enml: plain_text_to_enml(
+						&body_text,
+						content_metadata.source_url.as_deref(),
+						&resources,
+					),
 					resources,
 					tags,
 				},
@@ -836,68 +841,83 @@ fn note_plain_text(content: &str, snippet: &str, rte_text: Option<&str>) -> Stri
 	}
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ContentMetadata {
+	tags: Vec<String>,
+	source_url: Option<String>,
+}
+
 /// Split a final metadata line from the rendered body.
 ///
-/// The line is treated as metadata only when every token is either `#tag` or a
-/// bare `slug:value` token. `#slug:value` is intentionally not accepted. The
-/// returned body excludes that metadata line.
-fn extract_trailing_content_tags(text: &str) -> (String, Vec<String>) {
+/// The line is treated as metadata only when every token is `#tag`, a bare
+/// `slug:value`, or one bare `http(s)` source URL. `#slug:value` is
+/// intentionally not accepted. The returned body excludes that metadata line.
+fn extract_trailing_content_metadata(text: &str) -> (String, ContentMetadata) {
 	let mut lines = text.lines().collect::<Vec<_>>();
 	let Some(tag_line_index) = lines.iter().rposition(|line| !line.trim().is_empty()) else {
-		return (text.into(), vec![]);
+		return (text.into(), ContentMetadata::default());
 	};
-	let tags = parse_content_tag_line(lines[tag_line_index]);
-	if tags.is_empty() {
-		return (text.into(), vec![]);
+	let metadata = parse_content_metadata_line(lines[tag_line_index]);
+	if metadata.tags.is_empty() && metadata.source_url.is_none() {
+		return (text.into(), ContentMetadata::default());
 	}
 	lines.remove(tag_line_index);
 	while lines.last().is_some_and(|line| line.trim().is_empty()) {
 		lines.pop();
 	}
-	(lines.join("\n"), tags)
+	(lines.join("\n"), metadata)
 }
 
 /// Parse one content metadata line into tags understood by the post mapper.
-fn parse_content_tag_line(line: &str) -> Vec<String> {
+fn parse_content_metadata_line(line: &str) -> ContentMetadata {
 	let tokens = line.split_whitespace().collect::<Vec<_>>();
-	if tokens.is_empty() || tokens.iter().any(|token| !is_content_tag_token(token)) {
-		return vec![];
+	if tokens.is_empty() || tokens.iter().any(|token| !is_content_metadata_token(token)) {
+		return ContentMetadata::default();
 	}
-	tokens
-		.into_iter()
-		.filter_map(|token| {
+	let mut metadata = ContentMetadata::default();
+	for token in tokens {
+		if is_metadata_url(token) {
+			metadata.source_url.get_or_insert_with(|| token.to_string());
+		} else {
 			let tag = token.strip_prefix('#').unwrap_or(token).trim();
-			if tag.is_empty() {
-				None
-			} else {
-				Some(tag.to_string())
+			if !tag.is_empty() {
+				metadata.tags.push(tag.to_string());
 			}
-		})
-		.collect()
+		}
+	}
+	metadata
 }
 
 /// Return whether a final-line token is supported note metadata.
-fn is_content_tag_token(token: &str) -> bool {
-	token.starts_with("slug:") || (token.starts_with('#') && !token.starts_with("#slug:"))
+fn is_content_metadata_token(token: &str) -> bool {
+	is_metadata_url(token)
+		|| token.starts_with("slug:")
+		|| (token.starts_with('#') && !token.starts_with("#slug:"))
+}
+
+fn is_metadata_url(token: &str) -> bool {
+	token.starts_with("https://") || token.starts_with("http://")
 }
 
 /// Convert plain text from the Evernote cache into the subset of ENML that the
 /// renderer already understands.
-fn plain_text_to_enml(text: &str, resources: &[Resource]) -> String {
+fn plain_text_to_enml(text: &str, source_url: Option<&str>, resources: &[Resource]) -> String {
 	let mut enml = String::from("<en-note>");
-	for paragraph in text
-		.split("\n\n")
-		.map(str::trim)
-		.filter(|paragraph| !paragraph.is_empty())
-	{
-		enml.push_str("<p>");
-		for (index, line) in paragraph.lines().enumerate() {
-			if index > 0 {
-				enml.push_str("<br>");
-			}
-			enml.push_str(&encode_text(line));
+	if let Some(url) = source_url.filter(|url| !url.trim().is_empty()) {
+		push_source_url_enml(&mut enml, url);
+	}
+	for raw_paragraph in text.split("\n\n") {
+		let paragraph = raw_paragraph.trim_matches('\n');
+		if paragraph.trim().is_empty() {
+			continue;
 		}
-		enml.push_str("</p>");
+		if let Some(code) = fenced_code(paragraph) {
+			push_code_markdown(&mut enml, &code.body);
+		} else if is_code_paragraph(paragraph) {
+			push_code_markdown(&mut enml, paragraph.trim());
+		} else {
+			push_text_paragraph_enml(&mut enml, paragraph.trim());
+		}
 	}
 	for resource in resources {
 		enml.push_str("<p><en-media type=\"");
@@ -908,6 +928,112 @@ fn plain_text_to_enml(text: &str, resources: &[Resource]) -> String {
 	}
 	enml.push_str("</en-note>");
 	enml
+}
+
+fn push_source_url_enml(enml: &mut String, url: &str) {
+	let href = encode_double_quoted_attribute(url);
+	enml.push_str("<p><a href=\"");
+	enml.push_str(&href);
+	enml.push_str("\">");
+	enml.push_str(&encode_text(url));
+	enml.push_str("</a></p>\n\n");
+}
+
+fn push_text_paragraph_enml(enml: &mut String, paragraph: &str) {
+	enml.push_str("<p>");
+	for (index, line) in paragraph.lines().enumerate() {
+		if index > 0 {
+			enml.push_str("<br>");
+		}
+		enml.push_str(&encode_text(line));
+	}
+	enml.push_str("</p>");
+}
+
+fn push_code_markdown(enml: &mut String, code: &str) {
+	let code = code.trim_matches('\n');
+	let fence = markdown_code_fence(code);
+	enml.push_str("\n\n");
+	enml.push_str(&fence);
+	enml.push('\n');
+	enml.push_str(code);
+	enml.push('\n');
+	enml.push_str(&fence);
+	enml.push_str("\n\n");
+}
+
+struct CodeBlock {
+	body: String,
+}
+
+fn fenced_code(paragraph: &str) -> Option<CodeBlock> {
+	let trimmed = paragraph.trim();
+	let mut lines = trimmed.lines();
+	let first = lines.next()?;
+	first.strip_prefix("```")?;
+	let mut body = lines.collect::<Vec<_>>();
+	if body.last().is_some_and(|line| line.trim() == "```") {
+		body.pop();
+	}
+	Some(CodeBlock {
+		body: body.join("\n"),
+	})
+}
+
+fn markdown_code_fence(code: &str) -> String {
+	let max_run = Regex::new(r"`+")
+		.unwrap()
+		.find_iter(code)
+		.map(|m| m.as_str().len())
+		.max()
+		.unwrap_or(0);
+	"`".repeat(usize::max(3, max_run + 1))
+}
+
+fn is_code_paragraph(paragraph: &str) -> bool {
+	let lines = paragraph
+		.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>();
+	if lines.is_empty() {
+		return false;
+	}
+	if paragraph
+		.lines()
+		.any(|line| line.starts_with(' ') || line.starts_with('\t'))
+	{
+		return true;
+	}
+	let code_lines = lines.iter().filter(|line| is_code_line(line)).count();
+	code_lines > 0
+		&& lines
+			.iter()
+			.all(|line| is_code_line(line) || line.eq_ignore_ascii_case("or"))
+}
+
+fn is_code_line(line: &str) -> bool {
+	let lower = line.to_ascii_lowercase();
+	let first = lower.split_whitespace().next().unwrap_or("");
+	matches!(
+		first,
+		"select"
+			| "update"
+			| "insert"
+			| "delete"
+			| "create"
+			| "alter" | "drop"
+			| "with" | "explain"
+			| "vacuum"
+			| "grant" | "revoke"
+			| "begin" | "commit"
+			| "rollback"
+			| "copy" | "truncate"
+			| "analyze"
+	) || line.starts_with('\\')
+		|| line.starts_with("$ ")
+		|| line.starts_with("> ")
+		|| (line.ends_with(';') && (line.contains('=') || line.contains('(')))
 }
 
 fn normalize_indexed_plain_text(text: &str) -> String {
@@ -1055,7 +1181,7 @@ mod tests {
 			"",
 			None,
 		);
-		let enml = plain_text_to_enml(&text, &[]);
+		let enml = plain_text_to_enml(&text, None, &[]);
 
 		assert_eq!(
 			enml,
@@ -1065,29 +1191,54 @@ mod tests {
 
 	#[test]
 	fn extracts_content_tags_from_last_metadata_line() {
-		let (body, tags) = extract_trailing_content_tags(
-			"Chapter 8. Data Types\n\nTable of Contents\n\n#postgres #page slug:data-types",
+		let (body, metadata) = extract_trailing_content_metadata(
+			"Chapter 8. Data Types\n\nTable of Contents\n\n#postgres #page slug:data-types https://example.com/source",
 		);
 
 		assert_eq!(body, "Chapter 8. Data Types\n\nTable of Contents");
-		assert_eq!(tags, vec!["postgres", "page", "slug:data-types"]);
-		assert!(!plain_text_to_enml(&body, &[]).contains("slug:data-types"));
+		assert_eq!(metadata.tags, vec!["postgres", "page", "slug:data-types"]);
+		assert_eq!(
+			metadata.source_url.as_deref(),
+			Some("https://example.com/source")
+		);
+		assert!(!plain_text_to_enml(&body, None, &[]).contains("slug:data-types"));
 	}
 
 	#[test]
 	fn keeps_prose_hashtags_in_body() {
-		let (body, tags) = extract_trailing_content_tags("I like #postgres in prose");
+		let (body, metadata) = extract_trailing_content_metadata("I like #postgres in prose");
 
 		assert_eq!(body, "I like #postgres in prose");
-		assert!(tags.is_empty());
+		assert_eq!(metadata, ContentMetadata::default());
 	}
 
 	#[test]
 	fn rejects_hash_prefixed_slug_metadata() {
-		let (body, tags) = extract_trailing_content_tags("Body\n\n#postgres #slug:data-types");
+		let (body, metadata) =
+			extract_trailing_content_metadata("Body\n\n#postgres #slug:data-types");
 
 		assert_eq!(body, "Body\n\n#postgres #slug:data-types");
-		assert!(tags.is_empty());
+		assert_eq!(metadata, ContentMetadata::default());
+	}
+
+	#[test]
+	fn rejects_unknown_metadata_token() {
+		let (body, metadata) = extract_trailing_content_metadata("Body\n\n#postgres language:sql");
+
+		assert_eq!(body, "Body\n\n#postgres language:sql");
+		assert_eq!(metadata, ContentMetadata::default());
+	}
+
+	#[test]
+	fn renders_source_url_first_and_code_as_fenced_markdown() {
+		let enml = plain_text_to_enml(
+			"UPDATE activities SET tag = replace(tag, 'v', '');",
+			Some("https://example.com/source"),
+			&[],
+		);
+
+		assert!(enml.contains(r#"<p><a href="https://example.com/source">"#));
+		assert!(enml.contains("```\nUPDATE activities SET tag = replace(tag, 'v', '');\n```"));
 	}
 
 	struct CacheFixture {

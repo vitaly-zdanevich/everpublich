@@ -67,6 +67,24 @@ th {
 	padding: .35rem .5rem;
 }
 
+pre {
+	background: var(--panel);
+	border-radius: 4px;
+	overflow-x: auto;
+	padding: .75rem;
+}
+
+code {
+	background: var(--panel);
+	border-radius: 4px;
+	padding: .1rem .3rem;
+}
+
+pre code {
+	background: none;
+	padding: 0;
+}
+
 .site-header {
 	display: flex;
 	gap: 16px;
