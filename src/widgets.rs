@@ -1506,6 +1506,12 @@ fn link_title(url: &Url) -> Option<String> {
 	if livejournal_post(url) {
 		return cached_url_title(url.as_str(), || livejournal_title(url));
 	}
+	if habr_user_profile(url).is_some() {
+		return cached_url_title(url.as_str(), || habr_user_title(url));
+	}
+	if telegram_channel(url).is_some() {
+		return cached_url_title(url.as_str(), || telegram_channel_title(url));
+	}
 	None
 }
 
@@ -2043,6 +2049,15 @@ fn json_u64(value: &Value) -> Option<u64> {
 		Value::String(value) => value.parse().ok(),
 		_ => None,
 	}
+}
+
+fn json_scalar_text(value: &Value) -> Option<String> {
+	match value {
+		Value::Number(number) => Some(number.to_string()),
+		Value::String(value) => compact_title_text(value),
+		_ => None,
+	}
+	.filter(|value| !value.is_empty())
 }
 
 fn compact_title_text(text: &str) -> Option<String> {
@@ -3070,6 +3085,180 @@ fn livejournal_comment_count(html: &str) -> Option<u64> {
 	.and_then(|count| count.replace(' ', "").parse().ok())
 }
 
+fn habr_user_title(url: &Url) -> Option<String> {
+	let (alias, language) = habr_user_profile(url)?;
+	let endpoint = format!(
+		"https://habr.com/kek/v2/users/{}/card",
+		utf8_percent_encode(&alias, PATH_SEGMENT_ENCODE)
+	);
+	let response: Value = metadata_client()?
+		.get(endpoint)
+		.query(&[("hl", language)])
+		.header("Accept", "application/json")
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()
+		.and_then(|body| serde_json::from_str(&body).ok())?;
+	habr_user_title_from_card(&response)
+}
+
+fn habr_user_profile(url: &Url) -> Option<(String, &'static str)> {
+	let host = normalized_host(url)?;
+	if host != "habr.com" {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	let (users_index, language) = match parts.first().map(String::as_str) {
+		Some("ru") => (1, "ru"),
+		Some("en") => (1, "en"),
+		_ => (0, "en"),
+	};
+	(parts.get(users_index)? == "users").then_some(())?;
+	let alias = parts.get(users_index + 1)?;
+	is_habr_user_alias(alias).then(|| (alias.to_string(), language))
+}
+
+fn is_habr_user_alias(value: &str) -> bool {
+	!value.is_empty()
+		&& value
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn habr_user_title_from_card(card: &Value) -> Option<String> {
+	let alias = json_string(&card["alias"])?;
+	let primary = json_string(&card["fullname"])
+		.map(|name| format!("Habr user: {name} (@{alias})"))
+		.unwrap_or_else(|| format!("Habr user: @{alias}"));
+	let mut lines = vec![primary];
+	let publication_stats = &card["counterStats"]["publicationStats"];
+	if let Some(count) = json_u64(&publication_stats["articleCount"]) {
+		lines.push(format!("Articles: {count}"));
+	}
+	if let Some(count) = json_u64(&publication_stats["postCount"]) {
+		lines.push(format!("Posts: {count}"));
+	}
+	if let Some(count) = json_u64(&publication_stats["newsCount"]) {
+		lines.push(format!("News: {count}"));
+	}
+	if let Some(count) = json_u64(&card["counterStats"]["commentCount"]) {
+		lines.push(format!("Comments: {count}"));
+	}
+	if let Some(date) = json_string(&card["registerDateTime"]) {
+		lines.push(format!("Registration date: {date}"));
+	}
+	if let Some(rating) = json_scalar_text(&card["rating"]) {
+		lines.push(format!("Rating: {rating}"));
+	}
+	(lines.len() > 1).then(|| lines.join("\n"))
+}
+
+fn telegram_channel_title(url: &Url) -> Option<String> {
+	let channel = telegram_channel(url)?;
+	let html = metadata_client()?
+		.get(format!(
+			"https://t.me/{}",
+			utf8_percent_encode(&channel, PATH_SEGMENT_ENCODE)
+		))
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()?;
+	telegram_channel_title_from_html(&html)
+}
+
+fn telegram_channel(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if !matches!(host.as_str(), "t.me" | "telegram.me" | "telegram.dog") {
+		return None;
+	}
+	let parts = decoded_path_segments(url)
+		.into_iter()
+		.filter(|part| !part.is_empty())
+		.collect::<Vec<_>>();
+	let channel = match parts.as_slice() {
+		[channel] => channel,
+		[first, channel] if first == "s" => channel,
+		_ => return None,
+	};
+	is_telegram_channel_name(channel).then(|| channel.to_string())
+}
+
+fn is_telegram_channel_name(value: &str) -> bool {
+	let lower = value.to_ascii_lowercase();
+	!matches!(
+		lower.as_str(),
+		"addemoji"
+			| "addstickers"
+			| "addtheme"
+			| "bg" | "c"
+			| "joinchat"
+			| "proxy" | "setlanguage"
+			| "share" | "socks"
+			| "iv"
+	) && value.len() >= 5
+		&& value.len() <= 32
+		&& value
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn telegram_channel_title_from_html(html: &str) -> Option<String> {
+	let title = telegram_channel_page_title(html)
+		.or_else(|| meta_content(html, "og:title"))
+		.or_else(|| html_title_text(html))?;
+	let mut lines = vec![format!("Telegram channel: {title}")];
+	if let Some(count) = telegram_subscriber_count(html) {
+		lines.push(format!("Subscribers: {count}"));
+	}
+	if let Some(description) = meta_content(html, "og:description")
+		.or_else(|| meta_content(html, "description"))
+		.or_else(|| telegram_channel_description(html))
+	{
+		lines.push(format!("Description: {description}"));
+	}
+	(lines.len() > 1).then(|| lines.join("\n"))
+}
+
+fn telegram_channel_page_title(html: &str) -> Option<String> {
+	first_capture(
+		html,
+		r#"(?is)<div[^>]*class=["'][^"']*\btgme_page_title\b[^"']*["'][^>]*>.*?<span[^>]*>(.*?)</span>"#,
+	)
+	.map(|title| strip_html(&title))
+	.and_then(|title| compact_title_text(&title))
+}
+
+fn telegram_subscriber_count(html: &str) -> Option<String> {
+	let extra = first_capture(
+		html,
+		r#"(?is)<div[^>]*class=["'][^"']*\btgme_page_extra\b[^"']*["'][^>]*>(.*?)</div>"#,
+	)
+	.map(|extra| strip_html(&extra))?;
+	first_capture(&extra, r#"(?i)\b([0-9][0-9\s.,]*[KMB]?)\s+subscribers?\b"#)
+		.or_else(|| {
+			extra
+				.to_ascii_lowercase()
+				.contains("subscriber")
+				.then_some(extra)
+		})
+		.and_then(|count| compact_title_text(&count))
+}
+
+fn telegram_channel_description(html: &str) -> Option<String> {
+	first_capture(
+		html,
+		r#"(?is)<div[^>]*class=["'][^"']*\btgme_page_description\b[^"']*["'][^>]*>(.*?)</div>"#,
+	)
+	.map(|description| strip_html(&description))
+	.and_then(|description| compact_title_text(&description))
+}
+
 fn first_capture(html: &str, pattern: &str) -> Option<String> {
 	let caps = Regex::new(pattern).ok()?.captures(html)?;
 	(1..caps.len())
@@ -3828,6 +4017,57 @@ mod tests {
 		assert_eq!(
 			livejournal_title_from_html(livejournal).as_deref(),
 			Some("LiveJournal: Post title\nText: Post intro text.\nComments: 42")
+		);
+	}
+
+	#[test]
+	fn builds_habr_user_title() {
+		let url = Url::parse("https://habr.com/en/users/zdanevich-vitaly/").unwrap();
+		assert_eq!(
+			habr_user_profile(&url),
+			Some(("zdanevich-vitaly".into(), "en"))
+		);
+
+		let card = serde_json::json!({
+			"alias": "zdanevich-vitaly",
+			"fullname": "Vitaly Zdanevich",
+			"rating": 0.8,
+			"registerDateTime": "2006-07-28T05:42:49+00:00",
+			"counterStats": {
+				"commentCount": 177,
+				"publicationStats": {
+					"articleCount": 32,
+					"postCount": 14,
+					"newsCount": 3
+				}
+			}
+		});
+
+		assert_eq!(
+			habr_user_title_from_card(&card).as_deref(),
+			Some(
+				"Habr user: Vitaly Zdanevich (@zdanevich-vitaly)\nArticles: 32\nPosts: 14\nNews: 3\nComments: 177\nRegistration date: 2006-07-28T05:42:49+00:00\nRating: 0.8"
+			)
+		);
+	}
+
+	#[test]
+	fn builds_telegram_channel_title() {
+		let channel = Url::parse("https://t.me/telegram").unwrap();
+		let preview = Url::parse("https://t.me/s/telegram").unwrap();
+		let post = Url::parse("https://t.me/telegram/123").unwrap();
+		assert_eq!(telegram_channel(&channel).as_deref(), Some("telegram"));
+		assert_eq!(telegram_channel(&preview).as_deref(), Some("telegram"));
+		assert!(telegram_channel(&post).is_none());
+
+		let html = r#"<meta property="og:description" content="The official Telegram on Telegram.">
+<div class="tgme_page_title" dir="auto"><span dir="auto">Telegram News</span><i>ok</i></div>
+<div class="tgme_page_extra">10 169 937 subscribers</div>"#;
+		assert_eq!(
+			telegram_channel_title_from_html(html).as_deref(),
+			Some(
+				"Telegram channel: Telegram News\nSubscribers: 10 169 937\nDescription: The official Telegram on Telegram."
+			)
 		);
 	}
 
