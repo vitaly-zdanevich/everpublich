@@ -3,13 +3,15 @@ locals {
     Project = var.project_name
   }
 
-  availability_zone    = var.availability_zone != "" ? var.availability_zone : data.aws_availability_zones.available.names[0]
-  base_domain_regex    = replace(var.base_domain, ".", "\\.")
-  cloudfront_origin_id = "${var.project_name}-s3-origin"
-  cloudfront_url       = var.create_cloudfront_distribution ? "https://${aws_cloudfront_distribution.sites[0].domain_name}/" : ""
-  sites_bucket_name    = var.sites_bucket_name != "" ? var.sites_bucket_name : "${var.project_name}-${data.aws_caller_identity.current.account_id}-${var.aws_region}-sites"
-  ubuntu_image_arch    = var.instance_architecture == "arm64" ? "arm64" : "amd64"
-  zola_target          = var.instance_architecture == "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu"
+  availability_zone                  = var.availability_zone != "" ? var.availability_zone : data.aws_availability_zones.available.names[0]
+  base_domain_regex                  = replace(var.base_domain, ".", "\\.")
+  cloudfront_origin_id               = "${var.project_name}-s3-origin"
+  cloudfront_free_tier_bytes_per_day = floor(var.cloudfront_free_tier_bytes_per_month / 30)
+  cloudwatch_namespace               = "Everpublich"
+  cloudfront_url                     = var.create_cloudfront_distribution ? "https://${aws_cloudfront_distribution.sites[0].domain_name}/" : ""
+  sites_bucket_name                  = var.sites_bucket_name != "" ? var.sites_bucket_name : "${var.project_name}-${data.aws_caller_identity.current.account_id}-${var.aws_region}-sites"
+  ubuntu_image_arch                  = var.instance_architecture == "arm64" ? "arm64" : "amd64"
+  zola_target                        = var.instance_architecture == "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu"
 }
 
 data "aws_caller_identity" "current" {}
@@ -339,7 +341,21 @@ resource "aws_iam_role_policy" "app" {
           Effect   = "Allow"
           Resource = aws_cloudfront_distribution.sites[0].arn
         }
-      ] : []
+      ] : [],
+      [
+        {
+          Action = [
+            "cloudwatch:PutMetricData"
+          ]
+          Condition = {
+            StringEquals = {
+              "cloudwatch:namespace" = local.cloudwatch_namespace
+            }
+          }
+          Effect   = "Allow"
+          Resource = "*"
+        }
+      ]
     )
   })
 }
@@ -392,7 +408,9 @@ resource "aws_instance" "app" {
     s3_bucket                  = aws_s3_bucket.sites.bucket
     cloudfront_distribution_id = var.create_cloudfront_distribution ? aws_cloudfront_distribution.sites[0].id : ""
     cloudfront_url             = local.cloudfront_url
+    cloudwatch_namespace       = local.cloudwatch_namespace
     sqlite_schema_b64          = base64encode(file("${path.module}/sqlite-schema.sql"))
+    install_cloudwatch_agent   = var.install_cloudwatch_agent_on_boot
     support_email              = var.support_email
     support_telegram           = var.support_telegram
     support_tickets            = var.support_tickets
@@ -485,4 +503,153 @@ resource "aws_cloudfront_distribution" "sites" {
   }
 
   tags = local.common_tags
+}
+
+resource "aws_cloudwatch_dashboard" "operations" {
+  count = var.create_cloudwatch_dashboard ? 1 : 0
+
+  dashboard_name = "${var.project_name}-operations"
+  dashboard_body = jsonencode({
+    widgets = concat(
+      [
+        {
+          height = 6
+          width  = 12
+          x      = 0
+          y      = 0
+          type   = "metric"
+          properties = {
+            title   = "Shared notebooks"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 3600
+            stat    = "Maximum"
+            metrics = [
+              [local.cloudwatch_namespace, "SharedNotebooks", "Service", var.project_name, { label = "Shared notebooks" }]
+            ]
+          }
+        },
+        {
+          height = 6
+          width  = 12
+          x      = 12
+          y      = 0
+          type   = "metric"
+          properties = {
+            title   = "EC2 CPU and RAM"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 300
+            yAxis = {
+              left = {
+                label = "Percent"
+                min   = 0
+                max   = 100
+              }
+            }
+            metrics = [
+              ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.app.id, { id = "cpu", label = "CPU used %", stat = "Average" }],
+              [{ expression = "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=\"${aws_instance.app.id}\"', 'Average', 300)", id = "ram", label = "RAM used %" }]
+            ]
+          }
+        },
+        {
+          height = 6
+          width  = 12
+          x      = 0
+          y      = 6
+          type   = "metric"
+          properties = {
+            title   = "EC2 storage used"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 300
+            yAxis = {
+              left = {
+                label = "Percent"
+                min   = 0
+                max   = 100
+              }
+            }
+            metrics = [
+              [{ expression = "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=\"${aws_instance.app.id}\"', 'Average', 300)", id = "disk", label = "Disk used %" }]
+            ]
+          }
+        },
+        {
+          height = 6
+          width  = 12
+          x      = 12
+          y      = 6
+          type   = "metric"
+          properties = {
+            title   = "S3 storage used"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 86400
+            stat    = "Average"
+            metrics = [
+              ["AWS/S3", "BucketSizeBytes", "BucketName", aws_s3_bucket.sites.bucket, "StorageType", "StandardStorage", { label = "Generated sites bucket bytes" }]
+            ]
+          }
+        },
+        {
+          height = 6
+          width  = 24
+          x      = 0
+          y      = 18
+          type   = "metric"
+          properties = {
+            title   = "Errors"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 3600
+            metrics = concat(
+              [
+                [local.cloudwatch_namespace, "BuildFailures", "Service", var.project_name, { label = "Site build failures", stat = "Sum" }],
+                [local.cloudwatch_namespace, "SyncErrors", "Service", var.project_name, { label = "Sync command errors", stat = "Sum" }],
+                ["AWS/EC2", "StatusCheckFailed", "InstanceId", aws_instance.app.id, { label = "EC2 status check failed", stat = "Maximum" }]
+              ],
+              var.create_cloudfront_distribution ? [
+                ["AWS/CloudFront", "5xxErrorRate", "DistributionId", aws_cloudfront_distribution.sites[0].id, "Region", "Global", { label = "CloudFront 5xx error rate", region = "us-east-1", stat = "Average", yAxis = "right" }],
+                ["AWS/CloudFront", "4xxErrorRate", "DistributionId", aws_cloudfront_distribution.sites[0].id, "Region", "Global", { label = "CloudFront 4xx error rate", region = "us-east-1", stat = "Average", yAxis = "right" }]
+              ] : []
+            )
+          }
+        }
+      ],
+      var.create_cloudfront_distribution ? [
+        {
+          height = 6
+          width  = 24
+          x      = 0
+          y      = 12
+          type   = "metric"
+          properties = {
+            title   = "CloudFront traffic"
+            region  = "us-east-1"
+            view    = "timeSeries"
+            stacked = false
+            period  = 86400
+            stat    = "Sum"
+            yAxis = {
+              left = {
+                label = "Bytes/day"
+                min   = 0
+              }
+            }
+            metrics = [
+              ["AWS/CloudFront", "BytesDownloaded", "DistributionId", aws_cloudfront_distribution.sites[0].id, "Region", "Global", { id = "bytes", label = "Bytes downloaded" }],
+              [{ expression = "TIME_SERIES(${local.cloudfront_free_tier_bytes_per_day})", id = "free", label = "Free tier daily pace" }]
+            ]
+          }
+        }
+      ] : []
+    )
+  })
 }

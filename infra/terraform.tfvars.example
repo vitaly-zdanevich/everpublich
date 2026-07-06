@@ -36,6 +36,12 @@ cloudfront_price_class         = "PriceClass_100"
 cloudfront_aliases             = []
 cloudfront_acm_certificate_arn = ""
 
+# CloudWatch operations dashboard. The CloudFront graph draws a daily pace line
+# from this monthly allowance.
+create_cloudwatch_dashboard              = true
+install_cloudwatch_agent_on_boot         = true
+cloudfront_free_tier_bytes_per_month     = 100000000000
+
 # Download the latest x86_64 Evernote AppImage from Vitaly's repack releases.
 install_evernote_appimage_on_boot = true
 run_evernote_on_boot              = true

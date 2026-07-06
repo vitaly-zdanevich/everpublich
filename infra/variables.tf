@@ -174,6 +174,12 @@ variable "run_evernote_on_boot" {
   default     = true
 }
 
+variable "install_cloudwatch_agent_on_boot" {
+  type        = bool
+  description = "Install and start the Amazon CloudWatch Agent for EC2 RAM and disk metrics during cloud-init."
+  default     = true
+}
+
 variable "evernote_appimage_repository" {
   type        = string
   description = "GitHub owner/repo that publishes Evernote AppImage releases."
@@ -230,6 +236,23 @@ variable "cloudfront_wait_for_deployment" {
   type        = bool
   description = "Wait for CloudFront deployment completion during terraform apply."
   default     = false
+}
+
+variable "create_cloudwatch_dashboard" {
+  type        = bool
+  description = "Create an operations CloudWatch dashboard for Everpublich metrics, EC2, S3, and CloudFront."
+  default     = true
+}
+
+variable "cloudfront_free_tier_bytes_per_month" {
+  type        = number
+  description = "Monthly CloudFront transfer allowance used to draw the dashboard free-tier line. Default is 100 GB/month."
+  default     = 100000000000
+
+  validation {
+    condition     = var.cloudfront_free_tier_bytes_per_month > 0
+    error_message = "CloudFront free-tier bytes per month must be positive."
+  }
 }
 
 variable "support_email" {

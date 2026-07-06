@@ -34,6 +34,7 @@ write_files:
       EVERPUBLICH_S3_BUCKET='${s3_bucket}'
       EVERPUBLICH_CLOUDFRONT_DISTRIBUTION_ID='${cloudfront_distribution_id}'
       EVERPUBLICH_CLOUDFRONT_URL='${cloudfront_url}'
+      EVERPUBLICH_CLOUDWATCH_NAMESPACE='${cloudwatch_namespace}'
       EVERPUBLICH_SUPPORT_EMAIL='${support_email}'
       EVERPUBLICH_SUPPORT_TELEGRAM='${support_telegram}'
       EVERPUBLICH_SUPPORT_TICKETS='${support_tickets}'
@@ -64,17 +65,76 @@ write_files:
       fi
 
       if /opt/everpublich/bin/everpublich-cli --help | grep -q 'rebuild-all'; then
+        rebuild_log="$(mktemp)"
+        cleanup() {
+          rm -f "$rebuild_log"
+        }
+        trap cleanup EXIT
+
+        set +e
         /opt/everpublich/bin/everpublich-cli rebuild-all \
           --database "$EVERPUBLICH_SQLITE_PATH" \
           --evernote-config-dir "$EVERPUBLICH_EVERNOTE_CONFIG_DIR" \
           --sites-dir "$EVERPUBLICH_SITES_DIR" \
           --base-domain "$EVERPUBLICH_BASE_DOMAIN" \
-          --cloudfront-url "$EVERPUBLICH_CLOUDFRONT_URL"
+          --cloudfront-url "$EVERPUBLICH_CLOUDFRONT_URL" >"$rebuild_log" 2>&1
+        rebuild_status="$?"
+        set -e
+
+        cat "$rebuild_log"
+        notebooks='0'
+        notes='0'
+        built='0'
+        failed='0'
+        summary="$(grep -E '^Rebuild finished: [0-9]+ notebook\\(s\\), [0-9]+ note\\(s\\), [0-9]+ built, [0-9]+ failed$' "$rebuild_log" | tail -n 1 || true)"
+        parsed="$(printf '%s\n' "$summary" | sed -nE 's/^Rebuild finished: ([0-9]+) notebook\(s\), ([0-9]+) note\(s\), ([0-9]+) built, ([0-9]+) failed$/\1 \2 \3 \4/p')"
+        if [ -n "$parsed" ]; then
+          read -r notebooks notes built failed <<<"$parsed"
+        fi
+        sync_errors='0'
+        if [ "$rebuild_status" -ne 0 ]; then
+          sync_errors='1'
+        fi
+        /opt/everpublich/bin/publish-everpublich-metrics "$notebooks" "$notes" "$built" "$failed" "$sync_errors" || true
+        if [ "$rebuild_status" -ne 0 ]; then
+          exit "$rebuild_status"
+        fi
         exec /opt/everpublich/bin/publish-sites-to-s3
       fi
 
       echo 'The VM is ready, but the Evernote SQLite rebuild command is not implemented yet.'
+      /opt/everpublich/bin/publish-everpublich-metrics 0 0 0 0 1 || true
       exec /opt/everpublich/bin/publish-sites-to-s3
+  - path: /opt/everpublich/bin/publish-everpublich-metrics
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      set -a
+      . /etc/everpublich/everpublich.env
+      set +a
+
+      notebooks="$${1:-0}"
+      notes="$${2:-0}"
+      built="$${3:-0}"
+      failed="$${4:-0}"
+      sync_errors="$${5:-0}"
+
+      if ! command -v aws >/dev/null; then
+        echo 'aws CLI is not installed; skipping Everpublich CloudWatch metrics.' >&2
+        exit 0
+      fi
+
+      aws cloudwatch put-metric-data \
+        --namespace "$EVERPUBLICH_CLOUDWATCH_NAMESPACE" \
+        --metric-data \
+          "MetricName=SharedNotebooks,Dimensions=[{Name=Service,Value=${project_name}}],Value=$notebooks,Unit=Count" \
+          "MetricName=NotesSeen,Dimensions=[{Name=Service,Value=${project_name}}],Value=$notes,Unit=Count" \
+          "MetricName=SitesBuilt,Dimensions=[{Name=Service,Value=${project_name}}],Value=$built,Unit=Count" \
+          "MetricName=BuildFailures,Dimensions=[{Name=Service,Value=${project_name}}],Value=$failed,Unit=Count" \
+          "MetricName=SyncErrors,Dimensions=[{Name=Service,Value=${project_name}}],Value=$sync_errors,Unit=Count"
   - path: /opt/everpublich/bin/publish-sites-to-s3
     owner: root:root
     permissions: '0755'
@@ -135,6 +195,74 @@ write_files:
       curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$awscli_arch.zip" -o "$work_dir/awscliv2.zip"
       unzip -q "$work_dir/awscliv2.zip" -d "$work_dir"
       "$work_dir/aws/install"
+  - path: /opt/everpublich/bin/install-cloudwatch-agent
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      case "$(uname -m)" in
+        x86_64)
+          cw_arch='amd64'
+          ;;
+        aarch64)
+          cw_arch='arm64'
+          ;;
+        *)
+          echo "Unsupported CloudWatch Agent architecture: $(uname -m)" >&2
+          exit 1
+          ;;
+      esac
+
+      work_dir="$(mktemp -d)"
+      cleanup() {
+        rm -rf "$work_dir"
+      }
+      trap cleanup EXIT
+
+      curl -fsSL "https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/$cw_arch/latest/amazon-cloudwatch-agent.deb" -o "$work_dir/amazon-cloudwatch-agent.deb"
+      dpkg -i "$work_dir/amazon-cloudwatch-agent.deb"
+
+      install -d -o root -g root -m 0755 /opt/aws/amazon-cloudwatch-agent/etc
+      cat >/opt/aws/amazon-cloudwatch-agent/etc/everpublich.json <<'EOF'
+      {
+        "agent": {
+          "metrics_collection_interval": 60,
+          "run_as_user": "root"
+        },
+        "metrics": {
+          "namespace": "CWAgent",
+          "append_dimensions": {
+            "InstanceId": "$${aws:InstanceId}"
+          },
+          "metrics_collected": {
+            "mem": {
+              "measurement": [
+                "mem_used_percent"
+              ],
+              "metrics_collection_interval": 60
+            },
+            "disk": {
+              "measurement": [
+                "used_percent"
+              ],
+              "resources": [
+                "/",
+                "/srv/everpublich-data"
+              ],
+              "drop_device": true,
+              "metrics_collection_interval": 60
+            }
+          }
+        }
+      }
+      EOF
+      /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+        -a fetch-config \
+        -m ec2 \
+        -s \
+        -c file:/opt/aws/amazon-cloudwatch-agent/etc/everpublich.json
   - path: /opt/everpublich/bin/install-firefox
     owner: root:root
     permissions: '0755'
@@ -679,6 +807,7 @@ runcmd:
   - [ bash, -lc, 'sqlite3 /var/lib/everpublich/db/everpublich.sqlite < /opt/everpublich/share/sqlite-schema.sql' ]
   - [ bash, -lc, 'chown -R root:root /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/share && chown -R everpublich:everpublich /srv/everpublich-data/var-lib-everpublich /srv/everpublich-data/var-cache-everpublich /srv/everpublich-data/www-sites /srv/everpublich-data/opt-repo' ]
   - [ bash, -lc, '/opt/everpublich/bin/install-awscli' ]
+  - [ bash, -lc, 'if ${install_cloudwatch_agent}; then /opt/everpublich/bin/install-cloudwatch-agent; fi' ]
   - [ bash, -lc, 'if ${install_evernote_gui_deps}; then apt-get install -y xvfb openbox xpra x11vnc novnc websockify dbus-x11 dbus-user-session gnome-keyring libsecret-1-0 libgtk-3-0 libnss3 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libdbus-glib-1-2 fonts-liberation xauth xdg-utils || true; apt-get install -y libasound2 || apt-get install -y libasound2t64 || true; /opt/everpublich/bin/install-firefox; /opt/everpublich/bin/patch-xpra-html; fi' ]
   - [ bash, -lc, 'if ${install_evernote_appimage}; then /opt/everpublich/bin/install-evernote-appimage; fi' ]
   - [ bash, -lc, 'if ${install_rustup_on_boot}; then sudo -H -u everpublich bash -lc "if [ ! -x /var/lib/everpublich/.cargo/bin/cargo ]; then curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable; else /var/lib/everpublich/.cargo/bin/rustup default stable; fi"; fi' ]

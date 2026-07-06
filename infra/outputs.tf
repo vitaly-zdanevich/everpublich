@@ -23,6 +23,11 @@ output "cloudfront_note" {
   value       = length(aws_cloudfront_distribution.sites) > 0 ? "CloudFront serves generated user websites from private S3. The landing page remains on GitHub Pages." : "CloudFront is disabled; generated websites remain in S3."
 }
 
+output "cloudwatch_dashboard_url" {
+  description = "AWS Console URL for the Everpublich CloudWatch operations dashboard."
+  value       = length(aws_cloudwatch_dashboard.operations) > 0 ? "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.operations[0].dashboard_name}" : null
+}
+
 output "ssh_command" {
   description = "SSH command for the EC2 instance. Add -i if your key is not the default SSH key."
   value       = aws_instance.app.public_dns != "" ? "ssh ${var.ssh_user}@${aws_instance.app.public_dns}" : "ssh ${var.ssh_user}@${aws_instance.app.ipv6_addresses[0]}"
