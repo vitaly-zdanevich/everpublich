@@ -24,7 +24,7 @@ The current MVP avoids Evernote OAuth because Evernote no longer issues legacy A
 
 User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media are synced to a private S3 bucket and served through CloudFront. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
 
-The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. For the free MVP, it asks users to share a notebook read-only with `everpublich@proton.me`; Everpublich will email the generated website link after the first sync.
+The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. For the free MVP, it asks users to share a notebook read-only with `share@everpublich.my`; Everpublich will email the generated website link after the first sync.
 
 ## Architecture
 
