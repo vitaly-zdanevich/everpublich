@@ -29,6 +29,7 @@ class BuildPagesTest(unittest.TestCase):
 		)
 		self.assertIn('If you stop sharing the notebook', index)
 		self.assertIn('Plans, if we have users', index)
+		self.assertIn('Internal Evernote links inside the shared notebook', index)
 		self.assertIn('Nice subdomain address and custom domains', index)
 		self.assertIn('Sync to WordPress', index)
 		self.assertIn('Sync to a Telegram channel', index)
