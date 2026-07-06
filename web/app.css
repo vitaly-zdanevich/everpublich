@@ -42,6 +42,7 @@ body {
 
 a {
 	color: var(--link);
+	text-decoration: none;
 }
 
 .topbar {

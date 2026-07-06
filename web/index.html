@@ -14,11 +14,12 @@
 			<div class='hero-copy'>
 				<p class='eyebrow'>Free during test stage</p>
 				<h1>Everpublich</h1>
-				<p class='lead'>Sync an Evernote notebook to a static <a href='https://www.getzola.org/'>Zola</a> blog/website with RSS, tags, search, a calendar, podcast feed, media playback, expanded links-to-widgets, and nginx hosting on an ARM VM or on your GitHub.</p>
+				<p class='lead'>Sync an Evernote notebook to a static <a href='https://www.getzola.org/'>Zola</a> blog/website with RSS, tags, search, a calendar, podcast feed, media playback, expanded links-to-widgets, and S3/CloudFront hosting or on your GitHub.</p>
 				<p class='lead-note'>A better version of <a href='https://postach.io/'>postach.io</a> and <a href='https://notesrss.com/'>notesrss.com</a>.</p>
 				<div class='publish-card'>
 					<p>Share your notebook read-only with <a href='mailto:everpublich@proton.me'>everpublich@proton.me</a>, and we will publish and sync it.</p>
 					<p class='hint'>We will email you the website link when it is ready.</p>
+					<p class='hint'>Evernote no longer exposes native note tags in shared notebooks, so Everpublich reads <code>#tags</code> from note content instead.</p>
 				</div>
 			</div>
 		</section>
@@ -28,8 +29,8 @@
 			<ul class='feature-grid'>
 				<li>Daily full regeneration</li>
 				<li>Zola static search enabled by default, with Google search as a setting</li>
-				<li>Images, audio, video, and attachments copied from Evernote and served by nginx on the ARM VM</li>
-				<li>RSS, sitemap.xml, tag pages, About page, calendar, and podcast.xml for notes tagged <code>podcast</code></li>
+				<li>Images, audio, video, and attachments copied from Evernote and served from S3 through CloudFront</li>
+				<li>RSS, sitemap.xml, tag pages from note-content <code>#tags</code>, About page, calendar, and podcast.xml for notes with <code>#podcast</code></li>
 				<li>Optional GitHub backup repository with public/private visibility</li>
 				<li>Mobile-friendly design with true black dark mode via <code>prefers-color-scheme</code></li>
 				<li>Offline support - right in a browser</li>

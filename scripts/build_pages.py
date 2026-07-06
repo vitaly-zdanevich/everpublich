@@ -12,6 +12,10 @@ WEB = ROOT / 'web'
 OUTPUT = ROOT / 'dist' / 'pages'
 
 DEFAULT_API_BASE_URL = ''
+MINIFIED_ASSETS = {
+	'admin.js': 'admin.min.js',
+	'app.css': 'app.min.css',
+}
 
 
 def env(name: str, default: str) -> str:
@@ -23,7 +27,6 @@ def replacements() -> dict[str, str]:
 	"""Return template replacements for Pages-hosted HTML."""
 	return {
 		'__API_BASE_URL__': env('EVERPUBLICH_PAGES_API_BASE_URL', DEFAULT_API_BASE_URL),
-		'__BASE_DOMAIN__': env('EVERPUBLICH_PAGES_BASE_DOMAIN', 'everpublich.xyz'),
 		'__SUPPORT_EMAIL__': env('SUPPORT_EMAIL', 'zdanevich.vitaly@ya.ru'),
 		'__SUPPORT_TELEGRAM__': env('SUPPORT_TELEGRAM', 'https://t.me/vitaly_zdanevich'),
 		'__SUPPORT_TICKETS__': env(
@@ -43,7 +46,8 @@ def render_template(name: str, values: dict[str, str]) -> None:
 
 def copy_asset(name: str) -> None:
 	"""Copy a static asset without template replacement."""
-	shutil.copy2(WEB / name, OUTPUT / name)
+	source = MINIFIED_ASSETS.get(name, name)
+	shutil.copy2(WEB / source, OUTPUT / name)
 
 
 def validate_output() -> None:
