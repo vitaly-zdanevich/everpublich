@@ -7,7 +7,7 @@
 use crate::enml::enml_to_zola_body;
 use crate::models::{Note, Post, PostKind};
 use crate::slug::slug_from_title_and_tags;
-use crate::widgets::{enrich_link_titles, expand_bare_links};
+use crate::widgets::{enrich_link_titles, expand_bare_links, link_wikidata_ids};
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -261,6 +261,7 @@ fn note_to_post_with_slug(
 		body
 	} else {
 		let body = expand_bare_links(&body, expand_widgets);
+		let body = link_wikidata_ids(&body);
 		enrich_link_titles(&body)
 	};
 
@@ -505,6 +506,8 @@ mod tests {
 				file_name: "episode.mp3".into(),
 				mime: "audio/mpeg".into(),
 				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
 			}],
 		};
 		let post = notes_to_posts(&[note], true).remove(0);

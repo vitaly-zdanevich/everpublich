@@ -451,17 +451,127 @@ fn read_attachments(
 		.map(|(hash, filename, mime)| {
 			let file_name = safe_file_name(&filename, &hash);
 			let source_path = find_cached_resource_file(config_dir, &hash)?;
+			let text_preview = source_path
+				.as_deref()
+				.filter(|_| is_text_like_attachment(&file_name, &mime))
+				.and_then(read_text_preview);
+			let archive_tree = source_path
+				.as_deref()
+				.filter(|_| is_archive_attachment(&file_name, &mime))
+				.and_then(read_archive_tree);
 			Ok(CachedAttachment {
 				resource: Resource {
 					hash: hash.to_ascii_lowercase(),
 					file_name,
 					mime,
 					s3_key: None,
+					text_preview,
+					archive_tree,
 				},
 				source_path,
 			})
 		})
 		.collect()
+}
+
+fn is_text_like_attachment(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	mime.starts_with("text/")
+		|| matches!(
+			mime.as_str(),
+			"application/rtf"
+				| "application/x-rtf"
+				| "application/x-subrip"
+				| "application/ttml+xml"
+				| "application/json"
+				| "application/xml"
+		) || matches!(
+		file_extension(file_name).as_deref(),
+		Some(
+			"txt"
+				| "text" | "md"
+				| "markdown" | "rtf"
+				| "log" | "srt"
+				| "vtt" | "ass"
+				| "ssa" | "sub"
+				| "sbv" | "ttml"
+				| "dfxp" | "csv"
+				| "tsv" | "json"
+				| "xml" | "yaml"
+				| "yml" | "toml"
+		)
+	)
+}
+
+fn is_archive_attachment(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	matches!(
+		mime.as_str(),
+		"application/zip"
+			| "application/x-rar-compressed"
+			| "application/vnd.rar"
+			| "application/x-tar"
+			| "application/gzip"
+			| "application/x-gzip"
+			| "application/x-bzip2"
+			| "application/x-xz"
+			| "application/zstd"
+	) || matches!(
+		file_extension(file_name).as_deref(),
+		Some(
+			"zip"
+				| "rar" | "tar"
+				| "tgz" | "tbz"
+				| "tbz2" | "txz"
+				| "tar.gz" | "tar.bz2"
+				| "tar.xz" | "tar.zst"
+		)
+	)
+}
+
+fn read_text_preview(path: &Path) -> Option<String> {
+	let bytes = fs::read(path).ok()?;
+	let limit = bytes.len().min(128 * 1024);
+	let mut text = String::from_utf8_lossy(&bytes[..limit]).to_string();
+	if bytes.len() > limit {
+		text.push_str("\n... preview truncated ...");
+	}
+	Some(text)
+}
+
+fn read_archive_tree(path: &Path) -> Option<String> {
+	let extension = file_extension(path.file_name()?.to_str()?);
+	let output = match extension.as_deref() {
+		Some("zip") => Command::new("zipinfo").arg("-1").arg(path).output().ok(),
+		Some("rar") => Command::new("unrar").arg("lb").arg(path).output().ok(),
+		Some(
+			"tar" | "tgz" | "tbz" | "tbz2" | "txz" | "tar.gz" | "tar.bz2" | "tar.xz" | "tar.zst",
+		) => Command::new("tar").arg("-tf").arg(path).output().ok(),
+		_ => None,
+	}?;
+	if !output.status.success() {
+		return None;
+	}
+	let tree = String::from_utf8_lossy(&output.stdout)
+		.lines()
+		.take(1000)
+		.map(str::trim_end)
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n");
+	(!tree.is_empty()).then_some(tree)
+}
+
+fn file_extension(file_name: &str) -> Option<String> {
+	let lower = file_name.to_ascii_lowercase();
+	for extension in ["tar.gz", "tar.bz2", "tar.xz", "tar.zst"] {
+		if lower.ends_with(extension) {
+			return Some(extension.to_string());
+		}
+	}
+	lower
+		.rsplit_once('.')
+		.map(|(_, extension)| extension.to_string())
 }
 
 fn find_cached_resource_file(config_dir: &Path, hash: &str) -> Result<Option<PathBuf>> {
@@ -698,13 +808,25 @@ fn is_word_character(character: char) -> bool {
 
 fn serialize_text_insert<T: ReadTxn>(insert: Out, txn: &T, out: &mut String) {
 	match insert {
-		Out::Any(Any::String(value)) => out.push_str(&encode_text(value.as_ref())),
-		Out::Any(value) => out.push_str(&encode_text(&value.to_string())),
+		Out::Any(Any::String(value)) => out.push_str(&encode_text_with_line_breaks(value.as_ref())),
+		Out::Any(value) => out.push_str(&encode_text_with_line_breaks(&value.to_string())),
 		Out::YXmlElement(element) => serialize_xml_element(&element, txn, out),
 		Out::YXmlFragment(fragment) => out.push_str(&serialize_xml_fragment(&fragment, txn)),
 		Out::YXmlText(text) => serialize_xml_text(&text, txn, out),
-		other => out.push_str(&encode_text(&other.to_string(txn))),
+		other => out.push_str(&encode_text_with_line_breaks(&other.to_string(txn))),
 	}
+}
+
+fn encode_text_with_line_breaks(value: &str) -> String {
+	let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+	let mut out = String::new();
+	for (index, line) in normalized.split('\n').enumerate() {
+		if index > 0 {
+			out.push_str("<br>");
+		}
+		out.push_str(&encode_text(line));
+	}
+	out
 }
 
 fn sorted_text_attributes(attributes: &yrs::types::Attrs) -> Vec<(&str, &Any)> {
@@ -1740,6 +1862,38 @@ mod tests {
 	}
 
 	#[test]
+	fn keeps_rich_text_newlines_inside_formatted_runs() {
+		use yrs::types::Attrs;
+		use yrs::{
+			Any, ReadTxn, StateVector, Text, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim,
+		};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+		let div = en_note.push_back(&mut txn, XmlElementPrelim::empty("div"));
+		let text = div.push_back(&mut txn, XmlTextPrelim::new(""));
+		text.insert(&mut txn, 0, "8 Days of Christmas");
+		text.insert_with_attributes(
+			&mut txn,
+			19,
+			"\n (2001), Destiny's Child announced a hiatus",
+			Attrs::from([("sup".into(), Any::Bool(true))]),
+		);
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains(
+			"8 Days of Christmas<sup><br> (2001), Destiny's Child announced a hiatus</sup>"
+		));
+	}
+
+	#[test]
 	fn keeps_existing_spaces_between_inline_elements_minifier_safe() {
 		let html = restore_adjacent_inline_spacing("<b>Bold</b> <i>italic</i>");
 
@@ -1782,6 +1936,8 @@ mod tests {
 			file_name: "voice.mp3".into(),
 			mime: "audio/mpeg".into(),
 			s3_key: None,
+			text_preview: None,
+			archive_tree: None,
 		}];
 		let enml = rich_text_to_enml(
 			r#"<en-note><div>Body</div><div>#postgres slug:body https://example.com/source</div></en-note>"#,

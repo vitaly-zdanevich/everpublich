@@ -1,13 +1,13 @@
 {
 	"private": true,
 	"scripts": {
-		"lint:js": "eslint assets/zola/search.js web/admin.js",
+		"lint:js": "eslint assets/zola/search.js assets/zola/stl-viewer.js assets/zola/three-model-viewer.js web/admin.js",
 		"lint:css": "stylelint assets/zola/style.css web/app.css",
 		"lint:assets": "npm run lint:js && npm run lint:css",
-		"minify:js": "esbuild assets/zola/search.js --minify --outfile=assets/zola/search.min.js && esbuild web/admin.js --minify --outfile=web/admin.min.js",
+		"minify:js": "esbuild assets/zola/search.js --minify --outfile=assets/zola/search.min.js && esbuild assets/zola/stl-viewer.js --minify --outfile=assets/zola/stl-viewer.min.js && esbuild assets/zola/three-model-viewer.js --minify --outfile=assets/zola/three-model-viewer.min.js && esbuild web/admin.js --minify --outfile=web/admin.min.js",
 		"minify:css": "lightningcss --minify --bundle assets/zola/style.css -o assets/zola/style.min.css && lightningcss --minify --bundle web/app.css -o web/app.min.css",
 		"minify": "npm run minify:js && npm run minify:css",
-		"check:minified": "npm run minify && git diff --exit-code -- assets/zola/search.min.js assets/zola/style.min.css web/admin.min.js web/app.min.css"
+		"check:minified": "npm run minify && git diff --exit-code -- assets/zola/search.min.js assets/zola/stl-viewer.min.js assets/zola/three-model-viewer.min.js assets/zola/style.min.css web/admin.min.js web/app.min.css"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.1",

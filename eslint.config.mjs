@@ -6,7 +6,7 @@ export default [
 	},
 	js.configs.recommended,
 	{
-		files: ['assets/**/*.js', 'web/**/*.js'],
+		files: ['assets/zola/search.js', 'web/**/*.js'],
 		languageOptions: {
 			ecmaVersion: 2024,
 			sourceType: 'script',
@@ -17,6 +17,27 @@ export default [
 				fetch: 'readonly',
 				localStorage: 'readonly',
 				location: 'readonly',
+				window: 'readonly',
+			},
+		},
+		rules: {
+			eqeqeq: ['error', 'always'],
+			indent: ['error', 'tab'],
+			'no-var': 'error',
+			'prefer-const': 'error',
+			quotes: ['error', 'single', { avoidEscape: true }],
+			semi: ['error', 'always'],
+		},
+	},
+	{
+		files: ['assets/zola/stl-viewer.js', 'assets/zola/three-model-viewer.js'],
+		languageOptions: {
+			ecmaVersion: 2024,
+			sourceType: 'module',
+			globals: {
+				console: 'readonly',
+				document: 'readonly',
+				requestAnimationFrame: 'readonly',
 				window: 'readonly',
 			},
 		},

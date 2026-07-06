@@ -135,6 +135,12 @@ pub struct Widget {
 	pub shortcode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectMediaKind {
+	Audio,
+	Video,
+}
+
 /// Human-readable names of all supported and planned widget providers.
 pub fn supported_widget_names() -> Vec<&'static str> {
 	[
@@ -202,7 +208,7 @@ pub fn detect(url: &str) -> Option<Widget> {
 		"codepen.io" => WidgetProvider::CodePen,
 		"figma.com" => WidgetProvider::Figma,
 		"maps.google.com" | "google.com" => WidgetProvider::GoogleMaps,
-		"reddit.com" | "old.reddit.com" => WidgetProvider::Reddit,
+		"reddit.com" | "old.reddit.com" | "new.reddit.com" => WidgetProvider::Reddit,
 		"bsky.app" => WidgetProvider::Bluesky,
 		"t.me" | "telegram.me" | "telegram.dog" => WidgetProvider::Telegram,
 		"store.steampowered.com" => WidgetProvider::Steam,
@@ -287,6 +293,9 @@ fn shortcode(provider: WidgetProvider, original: &str, parsed: &Url) -> String {
 				)
 			})
 			.unwrap_or_else(|| generic_embed(provider, original)),
+		WidgetProvider::Reddit => {
+			reddit_shortcode(original, parsed).unwrap_or_else(|| generic_embed(provider, original))
+		}
 		WidgetProvider::Mastodon => {
 			mastodon_embed(parsed).unwrap_or_else(|| generic_embed(provider, original))
 		}
@@ -319,6 +328,10 @@ fn youtube_id(url: &Url) -> Option<String> {
 }
 
 fn vimeo_video_id(url: &Url) -> Option<&str> {
+	let host = normalized_host(url)?;
+	if !matches!(host.as_str(), "vimeo.com" | "player.vimeo.com") {
+		return None;
+	}
 	url.path_segments()?
 		.find(|part| part.chars().all(|c| c.is_ascii_digit()))
 }
@@ -653,6 +666,214 @@ fn vk_audio_playlist(url: &Url) -> Option<(String, String)> {
 	.then(|| (oid.to_string(), pid.to_string()))
 }
 
+fn reddit_shortcode(original: &str, url: &Url) -> Option<String> {
+	if reddit_subreddit(url).is_some() {
+		return reddit_subreddit_widget(url).or_else(|| reddit_subreddit_card(url));
+	}
+	reddit_post_json_url(url)?;
+	cached_widget_html(&format!("reddit-post:{}", url.as_str()), || {
+		let alive = cached_probe_bool(&format!("reddit-post-alive:{}", url.as_str()), || {
+			reddit_post_alive(url)
+		})?;
+		alive.then(|| reddit_embed_html(original))
+	})
+}
+
+fn reddit_subreddit_widget(url: &Url) -> Option<String> {
+	let subreddit = reddit_subreddit(url)?;
+	let embed_url = reddit_subreddit_embed_url(&subreddit);
+	let available = cached_probe_bool(&format!("reddit-subreddit-widget:{subreddit}"), || {
+		reddit_subreddit_widget_available(&embed_url)
+	})?;
+	available.then(|| reddit_subreddit_widget_html(&subreddit, &embed_url))
+}
+
+fn reddit_subreddit_widget_html(subreddit: &str, embed_url: &str) -> String {
+	format!(
+		r#"<div class="embed embed-reddit-subreddit" data-subreddit="{}"><script src="{}" charset="UTF-8"></script><p><a href="https://www.reddit.com/r/{}/" rel="noopener">Open r/{}</a></p></div>"#,
+		encode_double_quoted_attribute(subreddit),
+		encode_double_quoted_attribute(embed_url),
+		encode_double_quoted_attribute(subreddit),
+		encode_text(subreddit)
+	)
+}
+
+fn reddit_subreddit_embed_url(subreddit: &str) -> String {
+	format!("https://www.reddit.com/r/{subreddit}/.embed?limit=5")
+}
+
+fn reddit_subreddit_widget_available(embed_url: &str) -> Option<bool> {
+	let response = metadata_client()?.get(embed_url).send().ok()?;
+	Some(response.status().is_success())
+}
+
+fn reddit_subreddit_card(url: &Url) -> Option<String> {
+	cached_widget_html(&format!("reddit-subreddit:{}", url.as_str()), || {
+		let data = reddit_subreddit_about(url)?;
+		reddit_subreddit_card_from_data(&data)
+	})
+}
+
+fn reddit_subreddit_about(url: &Url) -> Option<Value> {
+	let subreddit = reddit_subreddit(url)?;
+	metadata_client()?
+		.get(format!("https://www.reddit.com/r/{subreddit}/about.json"))
+		.query(&[("raw_json", "1")])
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()
+		.and_then(|body| serde_json::from_str(&body).ok())
+}
+
+fn reddit_subreddit_card_from_data(data: &Value) -> Option<String> {
+	let subreddit = json_string(&data["data"]["display_name_prefixed"])
+		.or_else(|| json_string(&data["data"]["display_name"]).map(|name| format!("r/{name}")))?;
+	let url = json_string(&data["data"]["url"])
+		.map(|path| format!("https://www.reddit.com{}", path.trim_end_matches('/')))
+		.unwrap_or_else(|| format!("https://www.reddit.com/{subreddit}"));
+	let title = json_string(&data["data"]["title"]).unwrap_or_else(|| subreddit.clone());
+	let description = json_string(&data["data"]["public_description"])
+		.or_else(|| json_string(&data["data"]["description"]))
+		.map(|description| strip_html(&description))
+		.and_then(|description| compact_title_text(&description));
+	let subscribers = json_u64(&data["data"]["subscribers"]);
+	let active = json_u64(&data["data"]["active_user_count"]);
+	let icon = json_string(&data["data"]["community_icon"])
+		.or_else(|| json_string(&data["data"]["icon_img"]))
+		.and_then(|icon| icon.split('?').next().map(str::to_string));
+
+	let mut html = String::new();
+	html.push_str(r#"<div class="embed reddit-subreddit-card">"#);
+	if let Some(icon) = icon.filter(|icon| !icon.is_empty()) {
+		html.push_str(&format!(
+			r#"<a class="reddit-subreddit-card__icon" href="{}" rel="noopener"><img src="{}" alt=""></a>"#,
+			encode_double_quoted_attribute(&url),
+			encode_double_quoted_attribute(&icon)
+		));
+	}
+	html.push_str(r#"<div class="reddit-subreddit-card__body">"#);
+	html.push_str(&format!(
+		r#"<a class="reddit-subreddit-card__name" href="{}" rel="noopener"><strong>{}</strong><span>{}</span></a>"#,
+		encode_double_quoted_attribute(&url),
+		encode_text(&title),
+		encode_text(&subreddit)
+	));
+	if let Some(description) = description {
+		html.push_str(&format!(
+			r#"<p class="reddit-subreddit-card__description">{}</p>"#,
+			encode_text(&description)
+		));
+	}
+	html.push_str(r#"<dl class="reddit-subreddit-card__stats">"#);
+	push_reddit_stat(&mut html, "Members", subscribers);
+	push_reddit_stat(&mut html, "Online", active);
+	html.push_str("</dl></div></div>");
+	Some(html)
+}
+
+fn push_reddit_stat(html: &mut String, label: &str, value: Option<u64>) {
+	if let Some(value) = value {
+		html.push_str(&format!(
+			r#"<div><dt>{}</dt><dd>{}</dd></div>"#,
+			encode_text(label),
+			format_count(value)
+		));
+	}
+}
+
+fn reddit_embed_html(url: &str) -> String {
+	format!(
+		r#"<div class="embed embed-reddit"><blockquote class="reddit-embed-bq"><a href="{}" rel="noopener">View Reddit post</a></blockquote><script async src="https://embed.reddit.com/widgets.js" charset="UTF-8"></script></div>"#,
+		encode_double_quoted_attribute(url)
+	)
+}
+
+fn reddit_post_alive(url: &Url) -> Option<bool> {
+	let json_url = reddit_post_json_url(url)?;
+	let response: Value = metadata_client()?
+		.get(json_url)
+		.query(&[("raw_json", "1")])
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()
+		.and_then(|body| serde_json::from_str(&body).ok())?;
+	let post = response
+		.as_array()?
+		.first()?
+		.get("data")?
+		.get("children")?
+		.as_array()?
+		.first()?
+		.get("data")?;
+	let title_exists = json_string(&post["title"]).is_some();
+	let author = json_string(&post["author"]).unwrap_or_default();
+	let removed = post["removed_by_category"].is_string()
+		|| post["banned_by"].is_string()
+		|| author == "[deleted]";
+	Some(title_exists && !removed)
+}
+
+fn reddit_post_json_url(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if !matches!(
+		host.as_str(),
+		"reddit.com" | "old.reddit.com" | "new.reddit.com"
+	) {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	let comments_index = parts.iter().position(|part| part == "comments")?;
+	let id = parts.get(comments_index + 1)?;
+	if !is_reddit_id(id) {
+		return None;
+	}
+	if comments_index >= 2 && parts.first().is_some_and(|part| part == "r") {
+		let subreddit = parts.get(1)?;
+		if !is_reddit_subreddit(subreddit) {
+			return None;
+		}
+		return Some(format!(
+			"https://www.reddit.com/r/{subreddit}/comments/{id}.json"
+		));
+	}
+	Some(format!("https://www.reddit.com/comments/{id}.json"))
+}
+
+fn reddit_subreddit(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if !matches!(
+		host.as_str(),
+		"reddit.com" | "old.reddit.com" | "new.reddit.com"
+	) {
+		return None;
+	}
+	let parts = decoded_path_segments(url)
+		.into_iter()
+		.filter(|part| !part.is_empty())
+		.collect::<Vec<_>>();
+	if parts.first().map(String::as_str) != Some("r") || parts.len() != 2 {
+		return None;
+	}
+	let subreddit = parts.get(1)?;
+	is_reddit_subreddit(subreddit).then(|| subreddit.to_string())
+}
+
+fn is_reddit_id(value: &str) -> bool {
+	!value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn is_reddit_subreddit(value: &str) -> bool {
+	!value.is_empty()
+		&& value.len() <= 21
+		&& value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn mastodon_embed(url: &Url) -> Option<String> {
 	if mastodon_status_url(url) {
 		return mastodon_post_embed(url);
@@ -900,9 +1121,169 @@ fn expand_standalone_url(url: &str, fallback: &str) -> String {
 	{
 		return broken_link_html(url, &problem);
 	}
-	detect(url)
-		.map(|w| w.shortcode)
+	Url::parse(url)
+		.ok()
+		.and_then(|parsed| direct_media_embed(&parsed))
+		.or_else(|| detect(url).map(|w| w.shortcode))
 		.unwrap_or_else(|| fallback.to_string())
+}
+
+fn direct_media_embed(url: &Url) -> Option<String> {
+	let kind = direct_media_kind_from_url(url)?;
+	Some(direct_media_embed_html(url.as_str(), kind))
+}
+
+fn direct_media_kind_from_url(url: &Url) -> Option<DirectMediaKind> {
+	let path = url.path().to_ascii_lowercase();
+	let extension = path.rsplit_once('.')?.1;
+	match extension {
+		"aac" | "flac" | "m4a" | "mid" | "midi" | "mp3" | "oga" | "ogg" | "opus" | "wav"
+		| "weba" => Some(DirectMediaKind::Audio),
+		"m4v" | "mkv" | "mov" | "mp4" | "ogv" | "webm" => Some(DirectMediaKind::Video),
+		_ => None,
+	}
+}
+
+fn direct_media_embed_html(url: &str, kind: DirectMediaKind) -> String {
+	let url_attr = encode_double_quoted_attribute(url);
+	let label = match kind {
+		DirectMediaKind::Audio => "Open audio",
+		DirectMediaKind::Video => "Open video",
+	};
+	let fallback = format!(
+		r#"<a href="{url_attr}" rel="noopener">{}</a>"#,
+		encode_text(label)
+	);
+	match kind {
+		DirectMediaKind::Audio => format!(
+			r#"<div class="embed embed-direct-media"><audio controls preload="metadata"><source src="{url_attr}">{fallback}</audio></div>"#
+		),
+		DirectMediaKind::Video => format!(
+			r#"<div class="embed embed-direct-media"><video controls preload="metadata" playsinline><source src="{url_attr}">{fallback}</video></div>"#
+		),
+	}
+}
+
+/// Link plain Wikidata item ids like `Q42` to Wikidata before title enrichment.
+pub fn link_wikidata_ids(html: &str) -> String {
+	let tag = Regex::new(r#"(?is)<[^>]+>"#).unwrap();
+	let mut out = String::new();
+	let mut last = 0;
+	let mut skip_depth = 0usize;
+
+	for matched in tag.find_iter(html) {
+		let text = &html[last..matched.start()];
+		if skip_depth == 0 {
+			out.push_str(&link_wikidata_ids_in_text(text));
+		} else {
+			out.push_str(text);
+		}
+
+		let tag_text = matched.as_str();
+		out.push_str(tag_text);
+		update_wikidata_link_skip_depth(tag_text, &mut skip_depth);
+		last = matched.end();
+	}
+
+	let text = &html[last..];
+	if skip_depth == 0 {
+		out.push_str(&link_wikidata_ids_in_text(text));
+	} else {
+		out.push_str(text);
+	}
+	out
+}
+
+fn link_wikidata_ids_in_text(text: &str) -> String {
+	let shortcode = Regex::new(r#"(?s)\{\{.*?\}\}"#).unwrap();
+	let mut out = String::new();
+	let mut last = 0;
+	for matched in shortcode.find_iter(text) {
+		out.push_str(&link_wikidata_ids_in_plain_text(
+			&text[last..matched.start()],
+		));
+		out.push_str(matched.as_str());
+		last = matched.end();
+	}
+	out.push_str(&link_wikidata_ids_in_plain_text(&text[last..]));
+	out
+}
+
+fn link_wikidata_ids_in_plain_text(text: &str) -> String {
+	let id = Regex::new(r#"Q[1-9][0-9]*"#).unwrap();
+	let mut out = String::new();
+	let mut last = 0;
+
+	for matched in id.find_iter(text) {
+		if !wikidata_id_has_text_boundaries(text.as_bytes(), matched.start(), matched.end()) {
+			continue;
+		}
+		out.push_str(&text[last..matched.start()]);
+		let id = matched.as_str();
+		out.push_str(&format!(
+			r#"<a href="https://www.wikidata.org/wiki/{id}">{id}</a>"#
+		));
+		last = matched.end();
+	}
+
+	if last == 0 {
+		return text.to_string();
+	}
+	out.push_str(&text[last..]);
+	out
+}
+
+fn wikidata_id_has_text_boundaries(bytes: &[u8], start: usize, end: usize) -> bool {
+	let before = start
+		.checked_sub(1)
+		.and_then(|index| bytes.get(index))
+		.is_none_or(|byte| wikidata_id_boundary(*byte));
+	let after = bytes
+		.get(end)
+		.is_none_or(|byte| wikidata_id_boundary(*byte));
+	before && after
+}
+
+fn wikidata_id_boundary(byte: u8) -> bool {
+	!byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'/' | b':' | b'-')
+}
+
+fn update_wikidata_link_skip_depth(tag: &str, skip_depth: &mut usize) {
+	let Some(name) = html_tag_name(tag) else {
+		return;
+	};
+	if !matches!(
+		name.as_str(),
+		"a" | "code" | "pre" | "script" | "style" | "textarea"
+	) {
+		return;
+	}
+	if html_closing_tag(tag) {
+		*skip_depth = skip_depth.saturating_sub(1);
+	} else if !html_self_closing_tag(tag) {
+		*skip_depth += 1;
+	}
+}
+
+fn html_tag_name(tag: &str) -> Option<String> {
+	let inner = tag.trim_start_matches('<').trim_end_matches('>').trim();
+	let inner = inner.strip_prefix('/').unwrap_or(inner).trim_start();
+	if inner.starts_with(['!', '?']) {
+		return None;
+	}
+	let end = inner
+		.find(|c: char| c.is_whitespace() || c == '/')
+		.unwrap_or(inner.len());
+	let name = &inner[..end];
+	(!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+fn html_closing_tag(tag: &str) -> bool {
+	tag.trim_start_matches('<').trim_start().starts_with('/')
+}
+
+fn html_self_closing_tag(tag: &str) -> bool {
+	tag.trim_end().ends_with("/>")
 }
 
 /// Add hover titles with fetched metadata to supported external links.
@@ -937,13 +1318,8 @@ where
 			.as_ref()
 			.map(|_| add_class_attr(attrs, "broken-link"))
 			.unwrap_or_else(|| attrs.to_string());
-		if !has_title_attr(&attrs)
-			&& let Some(title) = problem.or_else(|| title_for_url(&url))
-		{
-			attrs.push_str(&format!(
-				r#" title="{}""#,
-				encode_double_quoted_attribute(&title)
-			));
+		if let Some(title) = problem.or_else(|| title_for_url(&url)) {
+			attrs = set_title_attr(&attrs, &title);
 		}
 		format!("<a{attrs}>")
 	})
@@ -959,6 +1335,12 @@ fn link_title(url: &Url) -> Option<String> {
 	}
 	if musicbrainz_entity(url).is_some() {
 		return cached_url_title(url.as_str(), || musicbrainz_title(url));
+	}
+	if github_file_raw_url(url).is_some() {
+		return cached_url_title(url.as_str(), || github_file_title(url));
+	}
+	if gitlab_file_raw_url(url).is_some() {
+		return cached_url_title(url.as_str(), || gitlab_file_title(url));
 	}
 	if github_repo(url).is_some() {
 		return cached_url_title(url.as_str(), || github_repo_title(url));
@@ -1087,6 +1469,7 @@ fn embeddable_link_problem(url: &Url) -> Option<String> {
 		.or_else(|| spotify_link_problem(url))
 		.or_else(|| soundcloud_link_problem(url))
 		.or_else(|| apple_podcast_link_problem(url))
+		.or_else(|| reddit_link_problem(url))
 		.or_else(|| mastodon_link_problem(url))
 }
 
@@ -1169,6 +1552,14 @@ fn apple_podcast_removed(id: &str) -> Option<bool> {
 		.ok()
 		.and_then(|body| serde_json::from_str(&body).ok())?;
 	json_u64(&response["resultCount"]).map(|count| count == 0)
+}
+
+fn reddit_link_problem(url: &Url) -> Option<String> {
+	reddit_post_json_url(url)?;
+	let alive = cached_probe_bool(&format!("reddit-post-alive:{}", url.as_str()), || {
+		reddit_post_alive(url)
+	})?;
+	(!alive).then(|| "Broken Reddit post: deleted, removed, or not public".to_string())
 }
 
 fn broken_link_html(url: &str, problem: &str) -> String {
@@ -1780,6 +2171,68 @@ fn github_repo_title(url: &Url) -> Option<String> {
 	repo_title_from_metadata("GitHub", &response)
 }
 
+fn github_file_title(url: &Url) -> Option<String> {
+	let (label, raw_url) = github_file_raw_url(url)?;
+	source_file_title("GitHub file", &label, &raw_url)
+}
+
+fn github_file_raw_url(url: &Url) -> Option<(String, String)> {
+	let host = normalized_host(url)?;
+	let parts = decoded_path_segments(url);
+	if host == "raw.githubusercontent.com" {
+		let owner = parts.first()?;
+		let repo = parts.get(1)?;
+		let revision = parts.get(2)?;
+		let file_parts = parts.get(3..)?;
+		if file_parts.is_empty() {
+			return None;
+		}
+		let file_path = file_parts.join("/");
+		return Some((
+			format!("{owner}/{repo}/{file_path}"),
+			format!(
+				"https://raw.githubusercontent.com/{}/{}/{}/{}",
+				owner,
+				repo,
+				revision,
+				file_parts
+					.iter()
+					.map(|part| utf8_percent_encode(part, PATH_SEGMENT_ENCODE).to_string())
+					.collect::<Vec<_>>()
+					.join("/")
+			),
+		));
+	}
+	if host != "github.com" {
+		return None;
+	}
+	let owner = parts.first()?;
+	let repo = parts.get(1)?;
+	if parts.get(2).map(String::as_str) != Some("blob") {
+		return None;
+	}
+	let revision = parts.get(3)?;
+	let file_parts = parts.get(4..)?;
+	if file_parts.is_empty() {
+		return None;
+	}
+	let file_path = file_parts.join("/");
+	Some((
+		format!("{owner}/{repo}/{file_path}"),
+		format!(
+			"https://raw.githubusercontent.com/{}/{}/{}/{}",
+			owner,
+			repo,
+			revision,
+			file_parts
+				.iter()
+				.map(|part| utf8_percent_encode(part, PATH_SEGMENT_ENCODE).to_string())
+				.collect::<Vec<_>>()
+				.join("/")
+		),
+	))
+}
+
 fn github_repo(url: &Url) -> Option<(String, String)> {
 	let host = normalized_host(url)?;
 	if host != "github.com" {
@@ -1791,6 +2244,35 @@ fn github_repo(url: &Url) -> Option<(String, String)> {
 	is_repo_path_part(&owner).then_some(())?;
 	is_repo_path_part(&repo).then_some(())?;
 	Some((owner, repo))
+}
+
+fn source_file_title(provider: &str, label: &str, raw_url: &str) -> Option<String> {
+	let body = metadata_client()?
+		.get(raw_url)
+		.header(reqwest::header::RANGE, "bytes=0-65535")
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()?;
+	let preview = first_source_lines(&body, 100)?;
+	Some(format!("{provider}: {label}\n\n{preview}"))
+}
+
+fn first_source_lines(body: &str, line_limit: usize) -> Option<String> {
+	let mut preview = body.lines().take(line_limit).collect::<Vec<_>>().join("\n");
+	if preview.trim().is_empty() {
+		return None;
+	}
+	const MAX_CHARS: usize = 12_000;
+	if preview.chars().count() > MAX_CHARS {
+		let mut truncated = preview.chars().take(MAX_CHARS - 3).collect::<String>();
+		truncated = truncated.trim_end().to_string();
+		truncated.push_str("...");
+		preview = truncated;
+	}
+	Some(preview)
 }
 
 fn gitlab_repo_title(url: &Url) -> Option<String> {
@@ -1807,6 +2289,48 @@ fn gitlab_repo_title(url: &Url) -> Option<String> {
 		.ok()
 		.and_then(|body| serde_json::from_str(&body).ok())?;
 	repo_title_from_metadata("GitLab", &response)
+}
+
+fn gitlab_file_title(url: &Url) -> Option<String> {
+	let (label, raw_url) = gitlab_file_raw_url(url)?;
+	source_file_title("GitLab file", &label, &raw_url)
+}
+
+fn gitlab_file_raw_url(url: &Url) -> Option<(String, String)> {
+	let host = normalized_host(url)?;
+	if host != "gitlab.com" {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	let dash_index = parts.iter().position(|part| part == "-")?;
+	let action = parts.get(dash_index + 1)?;
+	if !matches!(action.as_str(), "blob" | "raw") {
+		return None;
+	}
+	let revision = parts.get(dash_index + 2)?;
+	let file_parts = parts.get(dash_index + 3..)?;
+	if dash_index < 2 || file_parts.is_empty() {
+		return None;
+	}
+	let project = parts[..dash_index].join("/");
+	let file_path = file_parts.join("/");
+	Some((
+		format!("{project}/{file_path}"),
+		format!(
+			"https://gitlab.com/{}/-/raw/{}/{}",
+			parts[..dash_index]
+				.iter()
+				.map(|part| utf8_percent_encode(part, PATH_SEGMENT_ENCODE).to_string())
+				.collect::<Vec<_>>()
+				.join("/"),
+			revision,
+			file_parts
+				.iter()
+				.map(|part| utf8_percent_encode(part, PATH_SEGMENT_ENCODE).to_string())
+				.collect::<Vec<_>>()
+				.join("/")
+		),
+	))
 }
 
 fn gitlab_repo(url: &Url) -> Option<String> {
@@ -2493,12 +3017,17 @@ fn href_attr(attrs: &str) -> Option<String> {
 		.map(|value| value.as_str().to_string())
 }
 
-fn has_title_attr(attrs: &str) -> bool {
-	Regex::new(r#"(?is)\btitle\s*="#).unwrap().is_match(attrs)
-		|| Regex::new(r#"(?is)\btitle\s*='"#).unwrap().is_match(attrs)
-		|| Regex::new(r#"(?is)\btitle\s*=[^\s>]+"#)
-			.unwrap()
-			.is_match(attrs)
+fn set_title_attr(attrs: &str, title: &str) -> String {
+	let title_attr = format!(r#"title="{}""#, encode_double_quoted_attribute(title));
+	let title_regex = Regex::new(r#"(?is)\btitle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)"#).unwrap();
+	if let Some(matched) = title_regex.find(attrs) {
+		let mut out = String::new();
+		out.push_str(&attrs[..matched.start()]);
+		out.push_str(&title_attr);
+		out.push_str(&attrs[matched.end()..]);
+		return out;
+	}
+	format!("{attrs} {title_attr}")
 }
 
 fn add_class_attr(attrs: &str, class_name: &str) -> String {
@@ -2572,6 +3101,71 @@ mod tests {
 	}
 
 	#[test]
+	fn expands_direct_audio_video_links() {
+		let md = "https://cdn.example.test/audio.oga\nhttps://cdn.example.test/video.mkv";
+		let out = expand_bare_links_with(md, true, expand_direct_media_for_test);
+
+		assert!(out.contains("<audio controls"), "{out}");
+		assert!(
+			out.contains(r#"<source src="https://cdn.example.test/audio.oga">"#),
+			"{out}"
+		);
+		assert!(out.contains("<video controls"), "{out}");
+		assert!(out.contains("playsinline"), "{out}");
+		assert!(
+			out.contains(r#"<source src="https://cdn.example.test/video.mkv">"#),
+			"{out}"
+		);
+	}
+
+	#[test]
+	fn expands_rich_direct_media_link_blocks() {
+		let html = r#"<p><a href="https://cdn.example.test/song.opus">https://cdn.example.test/song.opus</a></p>"#;
+		let out = expand_bare_links_with(html, true, expand_direct_media_for_test);
+
+		assert!(out.contains("<audio controls"), "{out}");
+		assert!(
+			out.contains(r#"<source src="https://cdn.example.test/song.opus">"#),
+			"{out}"
+		);
+	}
+
+	fn expand_direct_media_for_test(url: &str, fallback: &str) -> String {
+		Url::parse(url)
+			.ok()
+			.and_then(|parsed| direct_media_embed(&parsed))
+			.unwrap_or_else(|| fallback.to_string())
+	}
+
+	#[test]
+	fn detects_direct_media_extensions() {
+		for url in [
+			"https://cdn.example.test/song.ogg",
+			"https://cdn.example.test/song.oga",
+			"https://cdn.example.test/song.opus",
+		] {
+			assert_eq!(
+				direct_media_kind_from_url(&Url::parse(url).unwrap()),
+				Some(DirectMediaKind::Audio)
+			);
+		}
+		for url in [
+			"https://cdn.example.test/movie.ogv",
+			"https://cdn.example.test/movie.mkv",
+			"https://cdn.example.test/movie.mp4",
+		] {
+			assert_eq!(
+				direct_media_kind_from_url(&Url::parse(url).unwrap()),
+				Some(DirectMediaKind::Video)
+			);
+		}
+		assert_eq!(
+			direct_media_kind_from_url(&Url::parse("https://cdn.example.test/vm.ova").unwrap()),
+			None
+		);
+	}
+
+	#[test]
 	fn adds_wikipedia_summary_to_link_title() {
 		let html = r#"<p><a href="https://en.wikipedia.org/wiki/PostgreSQL">PostgreSQL</a></p>"#;
 		let out = enrich_link_titles_with(html, |url| {
@@ -2586,10 +3180,21 @@ mod tests {
 	}
 
 	#[test]
-	fn keeps_existing_link_title() {
+	fn replaces_existing_link_title_when_metadata_exists() {
 		let html =
 			r#"<a href="https://en.wikipedia.org/wiki/PostgreSQL" title="Keep">PostgreSQL</a>"#;
-		let out = enrich_link_titles_with(html, |_| panic!("resolver must not be called"));
+		let out = enrich_link_titles_with(html, |_| Some("PostgreSQL intro".into()));
+
+		assert_eq!(
+			out,
+			r#"<a href="https://en.wikipedia.org/wiki/PostgreSQL" title="PostgreSQL intro">PostgreSQL</a>"#
+		);
+	}
+
+	#[test]
+	fn keeps_existing_link_title_when_metadata_is_missing() {
+		let html = r#"<a href="https://example.com/" title="Keep">Example</a>"#;
+		let out = enrich_link_titles_with(html, |_| None);
 
 		assert_eq!(out, html);
 	}
@@ -2731,6 +3336,53 @@ mod tests {
 	}
 
 	#[test]
+	fn detects_reddit_posts_and_subreddits() {
+		let post = Url::parse("https://www.reddit.com/r/rust/comments/1abcde/example/").unwrap();
+		let subreddit = Url::parse("https://www.reddit.com/r/rust/").unwrap();
+
+		assert_eq!(
+			reddit_post_json_url(&post).as_deref(),
+			Some("https://www.reddit.com/r/rust/comments/1abcde.json")
+		);
+		assert_eq!(reddit_subreddit(&subreddit).as_deref(), Some("rust"));
+		assert!(reddit_subreddit(&post).is_none());
+	}
+
+	#[test]
+	fn builds_reddit_subreddit_widget_script() {
+		let html = reddit_subreddit_widget_html("rust", &reddit_subreddit_embed_url("rust"));
+
+		assert!(html.contains("embed-reddit-subreddit"));
+		assert!(html.contains(r#"data-subreddit="rust""#));
+		assert!(html.contains(r#"src="https://www.reddit.com/r/rust/.embed?limit=5""#));
+		assert!(html.contains("Open r/rust"));
+	}
+
+	#[test]
+	fn builds_reddit_subreddit_card() {
+		let data = serde_json::json!({
+			"data": {
+				"display_name_prefixed": "r/rust",
+				"title": "Rust",
+				"url": "/r/rust/",
+				"public_description": "A place for Rust language discussion.",
+				"subscribers": 1234567,
+				"active_user_count": 456,
+				"icon_img": "https://styles.redditmedia.com/rust.png?width=256"
+			}
+		});
+		let card = reddit_subreddit_card_from_data(&data).unwrap();
+
+		assert!(card.contains("reddit-subreddit-card"));
+		assert!(card.contains("Rust"));
+		assert!(card.contains("r/rust"));
+		assert!(card.contains("A place for Rust language discussion."));
+		assert!(card.contains("<dd>1.2M</dd>"));
+		assert!(card.contains("<dd>456</dd>"));
+		assert!(card.contains("rust.png"));
+	}
+
+	#[test]
 	fn builds_mastodon_embed_urls_and_profile_cards() {
 		let status = Url::parse("https://mastodon.social/@Gargron/100254678717223630").unwrap();
 		let profile = Url::parse("https://mastodon.social/@Gargron").unwrap();
@@ -2791,6 +3443,18 @@ mod tests {
 		);
 		assert!(definitely_broken_status(404));
 		assert!(!definitely_broken_status(403));
+	}
+
+	#[test]
+	fn does_not_treat_numeric_non_vimeo_urls_as_vimeo() {
+		let stackoverflow = Url::parse(
+			"http://stackoverflow.com/questions/9604723/alternate-output-format-for-psql",
+		)
+		.unwrap();
+		let vimeo = Url::parse("https://vimeo.com/123456").unwrap();
+
+		assert_eq!(vimeo_video_id(&stackoverflow), None);
+		assert_eq!(vimeo_video_id(&vimeo), Some("123456"));
 	}
 
 	#[test]
@@ -2871,6 +3535,40 @@ mod tests {
 	}
 
 	#[test]
+	fn builds_github_and_gitlab_file_titles() {
+		let github =
+			Url::parse("https://github.com/vitaly-zdanevich/everpublich/blob/main/src/widgets.rs")
+				.unwrap();
+		let gitlab =
+			Url::parse("https://gitlab.com/group/sub/project/-/blob/main/src/lib.rs").unwrap();
+
+		assert_eq!(
+			github_file_raw_url(&github),
+			Some((
+				"vitaly-zdanevich/everpublich/src/widgets.rs".into(),
+				"https://raw.githubusercontent.com/vitaly-zdanevich/everpublich/main/src/widgets.rs"
+					.into()
+			))
+		);
+		assert_eq!(
+			gitlab_file_raw_url(&gitlab),
+			Some((
+				"group/sub/project/src/lib.rs".into(),
+				"https://gitlab.com/group/sub/project/-/raw/main/src/lib.rs".into()
+			))
+		);
+
+		let body = (1..=120)
+			.map(|number| format!("line {number}"))
+			.collect::<Vec<_>>()
+			.join("\n");
+		let preview = first_source_lines(&body, 100).unwrap();
+		assert!(preview.contains("line 1"));
+		assert!(preview.contains("line 100"));
+		assert!(!preview.contains("line 101"));
+	}
+
+	#[test]
 	fn builds_wikidata_statement_title() {
 		let entity = serde_json::json!({
 			"labels": {"en": {"value": "Douglas Adams"}},
@@ -2893,6 +3591,29 @@ mod tests {
 		assert_eq!(
 			wikidata_title_from_entity("Q42", &entity, &labels).as_deref(),
 			Some("Wikidata: Douglas Adams\ninstance of: human")
+		);
+	}
+
+	#[test]
+	fn links_plain_wikidata_ids_for_title_enrichment() {
+		let html = r#"<p>See Q42, not fooQ5 or https://example.com/Q7.</p><p><a href="https://example.com/Q8">Q8</a> <code>Q9</code> {{ audio(src="Q10.mp3") }}</p>"#;
+		let linked = link_wikidata_ids(html);
+		assert!(linked.contains(r#"<a href="https://www.wikidata.org/wiki/Q42">Q42</a>"#));
+		assert!(linked.contains("fooQ5"));
+		assert!(linked.contains("https://example.com/Q7"));
+		assert!(linked.contains(r#"<a href="https://example.com/Q8">Q8</a>"#));
+		assert!(linked.contains("<code>Q9</code>"));
+		assert!(linked.contains(r#"{{ audio(src="Q10.mp3") }}"#));
+
+		let enriched = enrich_link_titles_with(&linked, |url| {
+			(url.as_str() == "https://www.wikidata.org/wiki/Q42")
+				.then(|| "Wikidata: Douglas Adams".to_string())
+		});
+		assert!(
+			enriched.contains(
+				r#"<a href="https://www.wikidata.org/wiki/Q42" title="Wikidata: Douglas Adams">Q42</a>"#
+			),
+			"{enriched}"
 		);
 	}
 

@@ -231,6 +231,8 @@ fn mock_notes() -> Vec<Note> {
                 file_name: "episode.mp3".into(),
                 mime: "audio/mpeg".into(),
                 s3_key: None,
+                text_preview: None,
+                archive_tree: None,
             }],
         },
         Note {

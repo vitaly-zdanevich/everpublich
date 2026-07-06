@@ -252,6 +252,12 @@ pub struct Resource {
 	pub mime: String,
 	/// Optional remote object key after upload or mirroring.
 	pub s3_key: Option<String>,
+	/// Optional human-readable preview for text-like attachments.
+	#[serde(default)]
+	pub text_preview: Option<String>,
+	/// Optional archive listing rendered as a closed tree.
+	#[serde(default)]
+	pub archive_tree: Option<String>,
 }
 
 /// A post/page ready to write into Zola content.

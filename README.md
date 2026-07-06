@@ -77,8 +77,11 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - A note titled `everpublich:#tag` adds a top navigation link to that tag; the note content becomes the link tooltip.
 - A note titled `everpublich:config` can set notebook options like `widgets: off` and can embed fenced `css` or `js` code blocks into the generated website.
 - If an About note references about.me, the intended behavior is to reuse text, image, and links from that profile and link back to it.
-- Images, audio, video, and attachments from Evernote notes are copied to the static site.
+- Images, audio, video, 3D models, text previews, and attachments from Evernote notes are copied to the static site.
 - Audio and video are playable in the browser.
+- GLB/GLTF, STL, OBJ, PLY, 3MF, DAE, FBX, 3DM, VOX, VTK/VTP, XYZ, and G-code 3D attachments are rotatable in the browser when browser loaders can read them.
+- Text, Markdown, RTF, logs, subtitle, CSV, JSON, YAML, TOML, and XML attachments are shown in a closed preview block with a download link.
+- ZIP, RAR, and TAR-family archives are copied and can show a closed file tree when the server can inspect them.
 - Internal Evernote note links become relative website links.
 - Evernote formatting is preserved as HTML, including fonts, sizes, colors, and tables.
 - Optional Google Analytics and Yandex Metrica.
@@ -107,6 +110,7 @@ If a note contains a bare supported URL, Everpublich can expand it into a widget
 - Steam
 - VK playlists
 - Mastodon posts and static profile cards
+- Reddit posts, subreddit widgets, and static subreddit cards as fallback
 
 Good extra widget candidates:
 
@@ -118,7 +122,7 @@ Good extra widget candidates:
 - GitHub Gist and CodePen for code
 - Figma embeds for design files
 - Google Maps for places
-- Reddit, Bluesky, and Telegram public posts
+- Bluesky and Telegram public posts
 
 ## GitHub backup
 

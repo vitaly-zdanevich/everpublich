@@ -89,6 +89,18 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 	write_templates(root, &notebook_config)?;
 	write_file(&root.join("static/style.css"), STYLE_CSS)?;
 	write_file(&root.join("static/search.js"), SEARCH_JS)?;
+	if posts.iter().any(|post| post.body.contains("stl_viewer(")) {
+		write_file(&root.join("static/stl-viewer.js"), STL_VIEWER_JS)?;
+	}
+	if posts
+		.iter()
+		.any(|post| post.body.contains("three_model_viewer("))
+	{
+		write_file(
+			&root.join("static/three-model-viewer.js"),
+			THREE_MODEL_VIEWER_JS,
+		)?;
+	}
 	write_search_metadata(root, &user.settings, posts)?;
 	if let Some(custom_css) = user
 		.settings
@@ -892,6 +904,15 @@ fn write_templates(root: &Path, notebook_config: &NotebookSiteConfig) -> Result<
 		("templates/tags/single.html", TAGS_SINGLE_HTML),
 		("templates/shortcodes/audio.html", AUDIO_SHORTCODE),
 		("templates/shortcodes/video.html", VIDEO_SHORTCODE),
+		(
+			"templates/shortcodes/model_viewer.html",
+			MODEL_VIEWER_SHORTCODE,
+		),
+		("templates/shortcodes/stl_viewer.html", STL_VIEWER_SHORTCODE),
+		(
+			"templates/shortcodes/three_model_viewer.html",
+			THREE_MODEL_VIEWER_SHORTCODE,
+		),
 		("templates/shortcodes/youtube.html", YOUTUBE_SHORTCODE),
 		("templates/shortcodes/vimeo.html", VIMEO_SHORTCODE),
 		("templates/shortcodes/spotify.html", SPOTIFY_SHORTCODE),
@@ -1116,7 +1137,8 @@ fn post_nav_title(post: &Post) -> String {
 }
 
 fn post_plain_text(body: &str) -> String {
-	let with_line_breaks = block_boundary_regex().replace_all(body, "\n");
+	let without_attachment_previews = attachment_preview_regex().replace_all(body, " ");
+	let with_line_breaks = block_boundary_regex().replace_all(&without_attachment_previews, "\n");
 	let without_shortcodes = shortcode_regex().replace_all(&with_line_breaks, " ");
 	let without_tags = html_tag_regex().replace_all(&without_shortcodes, " ");
 	decode_html_entities(&without_tags)
@@ -1125,6 +1147,14 @@ fn post_plain_text(body: &str) -> String {
 		.filter(|line| !line.is_empty())
 		.collect::<Vec<_>>()
 		.join("\n")
+}
+
+fn attachment_preview_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| {
+		Regex::new(r#"(?is)<details\b[^>]*class=(?:"[^"]*\battachment-preview\b[^"]*"|'[^']*\battachment-preview\b[^']*')[^>]*>.*?</details>"#)
+			.unwrap()
+	})
 }
 
 fn truncate_chars(text: &str, max: usize) -> String {
@@ -1273,6 +1303,9 @@ const AUDIO_SHORTCODE: &str =
 	r#"<audio controls preload="metadata" src="{{ page.permalink | safe }}{{ src }}"></audio>"#;
 const VIDEO_SHORTCODE: &str =
 	r#"<video controls preload="metadata" src="{{ page.permalink | safe }}{{ src }}"></video>"#;
+const MODEL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-model-viewer"><model-viewer src="{{ page.permalink | safe }}{{ src }}" alt="{{ alt | default(value="3D model") }}" camera-controls touch-action="pan-y" auto-rotate loading="lazy" reveal="interaction"><a href="{{ page.permalink | safe }}{{ src }}" download>Download 3D model</a></model-viewer></div><script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.3.1/model-viewer.min.js"></script>"#;
+const STL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-stl-viewer stl-viewer" data-src="{{ page.permalink | safe }}{{ src }}" data-label="{{ label | default(value="STL model") }}"><div class="stl-viewer__canvas" role="img" aria-label="{{ label | default(value="STL model") }}"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="STL model") }}</a></p></div><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"}}</script><script type="module" src="{{ get_url(path='stl-viewer.js', cachebust=true) | safe }}"></script>"#;
+const THREE_MODEL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-three-model-viewer three-model-viewer" data-src="{{ page.permalink | safe }}{{ src }}" data-kind="{{ kind }}" data-label="{{ label | default(value="3D model") }}"><div class="three-model-viewer__canvas" role="img" aria-label="{{ label | default(value="3D model") }}"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="3D model") }}</a></p></div><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"}}</script><script type="module" src="{{ get_url(path='three-model-viewer.js', cachebust=true) | safe }}"></script>"#;
 const YOUTUBE_SHORTCODE: &str = r#"<div class="embed embed-youtube"><iframe src="https://www.youtube.com/embed/{{ id }}" title="YouTube video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>"#;
 const VIMEO_SHORTCODE: &str = r#"<div class="embed embed-vimeo"><iframe src="https://player.vimeo.com/video/{{ id }}" title="Vimeo video" loading="lazy" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></div>"#;
 const SPOTIFY_SHORTCODE: &str = r#"<div class="embed embed-spotify"><iframe src="{{ url }}" loading="lazy" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe><a href="{{ url }}">Open in Spotify</a></div>"#;
@@ -1290,6 +1323,8 @@ const STEAM_SHORTCODE: &str = r#"<div class="embed embed-steam"><iframe src="htt
 const VK_PLAYLIST_SHORTCODE: &str = r#"<div class="embed embed-vk-playlist"><iframe src="https://vk.com/widget_playlist.php?oid={{ oid }}&pid={{ pid }}" title="VK playlist" loading="lazy" allow="autoplay; encrypted-media"></iframe></div>"#;
 
 const SEARCH_JS: &str = include_str!("../assets/zola/search.min.js");
+const STL_VIEWER_JS: &str = include_str!("../assets/zola/stl-viewer.min.js");
+const THREE_MODEL_VIEWER_JS: &str = include_str!("../assets/zola/three-model-viewer.min.js");
 const STYLE_CSS: &str = include_str!("../assets/zola/style.min.css");
 
 #[cfg(test)]
@@ -1329,6 +1364,8 @@ mod tests {
 				file_name: "episode one.mp3".into(),
 				mime: "audio/mpeg".into(),
 				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
 			}],
 		};
 		let posts = notes_to_posts(&[note], true);
@@ -1338,6 +1375,8 @@ mod tests {
 		assert_eq!(generated.podcast_items, 1);
 		assert!(dir.path().join("config.toml").exists());
 		assert!(dir.path().join("content/posts/episode/index.md").exists());
+		assert!(!dir.path().join("static/stl-viewer.js").exists());
+		assert!(!dir.path().join("static/three-model-viewer.js").exists());
 		let podcast = fs::read_to_string(dir.path().join("static/podcast.xml")).unwrap();
 		assert!(podcast.contains(
 			r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">"#

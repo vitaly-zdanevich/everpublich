@@ -71,11 +71,19 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "--quote-bg:#0b1510");
 	assert_contains(&style, ".broken-link{color:#b00020}");
 	assert_contains(&style, ".broken-link{color:#ff6b7a}");
+	assert_contains(&style, ".internal-link{color:var(--accent)}");
 	assert_contains(
 		&style,
 		".embed-youtube,.embed-vimeo,.embed-rumble,.embed-odysee,.embed-bilibili,.embed-tiktok{aspect-ratio:16/9}",
 	);
 	assert_contains(&style, ".embed-soundcloud iframe{height:400px}");
+	assert_contains(&style, ".embed-direct-media video{width:100%}");
+	assert_contains(
+		&style,
+		".embed-3d model-viewer,.stl-viewer__canvas,.three-model-viewer__canvas{",
+	);
+	assert_contains(&style, ".attachment-preview iframe{");
+	assert_contains(&style, ".attachment-preview pre{");
 	assert_contains(&style, ".embed-vk-playlist iframe{height:450px}");
 	assert_contains(&style, ".embed-mastodon-post iframe{height:520px}");
 	assert_contains(&style, ".mastodon-profile-card{");
@@ -101,6 +109,14 @@ fn zola_build_renders_public_html() {
 		".embed-genius,.embed-genius *{color:var(--fg)!important}",
 	);
 	assert_contains(&style, ".embed-genius a{color:var(--link)!important}");
+	assert_contains(
+		&style,
+		".embed-genius .rg_embed,.embed-genius .rg_embed_body,.embed-genius .rg_embed_header,.embed-genius .rg_embed_footer{color:var(--fg)!important;background-color:#080808!important}",
+	);
+	assert_contains(
+		&style,
+		".embed-genius .rg_embed a[data-id]{color:var(--fg)!important;background-color:#6ed69a38!important}",
+	);
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");
 	assert_contains(
@@ -109,8 +125,13 @@ fn zola_build_renders_public_html() {
 	);
 	assert_contains(&first_post, "title=22:13:20");
 	assert_contains(&first_post, "href=/posts/linked-note/");
+	assert_contains(&first_post, "class=internal-link");
 	assert_contains(&first_post, "src=photo.jpg");
 	assert_contains(&first_post, "href=archive.pdf");
+	assert_not_contains(&first_post, "model-viewer.min.js");
+	assert_not_contains(&first_post, "stl-viewer.js");
+	assert_not_contains(&first_post, "three-model-viewer.js");
+	assert_not_contains(&first_post, "cdn.jsdelivr.net/npm/three");
 	assert_contains(&first_post, "post-nav");
 	assert_contains(&first_post, "accesskey=o");
 	assert_contains(&first_post, "aria-keyshortcuts=Alt+Shift+O");
@@ -134,6 +155,45 @@ fn zola_build_renders_public_html() {
 	assert_contains(&media_post, "episode.mp3");
 	assert_contains(&media_post, "<video controls");
 	assert_contains(&media_post, "clip.mp4");
+	assert_contains(&media_post, "<model-viewer");
+	assert_contains(&media_post, "shape.glb");
+	assert_contains(&media_post, "model-viewer.min.js");
+	assert_contains(
+		&media_post,
+		"class=\"embed embed-3d embed-stl-viewer stl-viewer\"",
+	);
+	assert_contains(&media_post, "mesh.stl");
+	assert_contains(&media_post, "stl-viewer.js");
+	assert_contains(
+		&media_post,
+		"class=\"embed embed-3d embed-three-model-viewer three-model-viewer\"",
+	);
+	assert_contains(&media_post, "mesh.obj");
+	assert_contains(&media_post, "three-model-viewer.js");
+	assert_contains(
+		&media_post,
+		"<details class=\"attachment-preview attachment-preview-text\">",
+	);
+	assert_contains(&media_post, "<summary>notes.md</summary>");
+	assert_contains(&media_post, "<pre># Notes");
+	assert_contains(&media_post, "<summary>subtitles.srt</summary>");
+	assert_contains(&media_post, "00:00:00,000");
+	assert_contains(&media_post, "<summary>server.log</summary>");
+	assert_contains(&media_post, "Started");
+	assert_contains(&media_post, "<summary>data.csv</summary>");
+	assert_contains(&media_post, "name,value");
+	assert_contains(&media_post, "<summary>data.json</summary>");
+	assert_contains(&media_post, "{\"ok\": true}");
+	assert_contains(&media_post, "<summary>data.yaml</summary>");
+	assert_contains(&media_post, "ok: true");
+	assert_contains(&media_post, "<summary>data.xml</summary>");
+	assert_contains(&media_post, "&lt;ok>true&lt;/ok>");
+	assert_contains(
+		&media_post,
+		"<details class=\"attachment-preview attachment-preview-archive\">",
+	);
+	assert_contains(&media_post, "<summary>archive.zip</summary>");
+	assert_contains(&media_post, "docs/readme.txt");
 
 	let calendar = read(&public, "calendar/index.html");
 	assert_contains(
@@ -370,12 +430,16 @@ fn note_fixtures() -> Vec<Note> {
 					file_name: "photo.jpg".into(),
 					mime: "image/jpeg".into(),
 					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
 				},
 				Resource {
 					hash: "pdf".into(),
 					file_name: "archive.pdf".into(),
 					mime: "application/pdf".into(),
 					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
 				},
 			],
 		},
@@ -394,19 +458,111 @@ fn note_fixtures() -> Vec<Note> {
 			created: utc(1_700_172_800),
 			updated: utc(1_700_172_900),
 			tags: vec!["podcast".into(), "media".into()],
-			enml: r#"<en-note><p>Audio and video stay playable.</p><en-media type="audio/mpeg" hash="audio"/><en-media type="video/mp4" hash="video"/></en-note>"#.into(),
+			enml: r#"<en-note><p>Audio and video stay playable.</p><en-media type="audio/mpeg" hash="audio"/><en-media type="video/mp4" hash="video"/><en-media type="model/gltf-binary" hash="glb"/><en-media type="model/stl" hash="stl"/><en-media type="model/obj" hash="obj"/><en-media type="text/markdown" hash="text"/><en-media type="application/x-subrip" hash="sub"/><en-media type="text/plain" hash="log"/><en-media type="text/csv" hash="csv"/><en-media type="application/json" hash="json"/><en-media type="application/yaml" hash="yaml"/><en-media type="application/xml" hash="xml"/><en-media type="application/zip" hash="zip"/></en-note>"#.into(),
 			resources: vec![
 				Resource {
 					hash: "audio".into(),
 					file_name: "episode.mp3".into(),
 					mime: "audio/mpeg".into(),
 					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
 				},
 				Resource {
 					hash: "video".into(),
 					file_name: "clip.mp4".into(),
 					mime: "video/mp4".into(),
 					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "glb".into(),
+					file_name: "shape.glb".into(),
+					mime: "model/gltf-binary".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "stl".into(),
+					file_name: "mesh.stl".into(),
+					mime: "model/stl".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "obj".into(),
+					file_name: "mesh.obj".into(),
+					mime: "model/obj".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "text".into(),
+					file_name: "notes.md".into(),
+					mime: "text/markdown".into(),
+					s3_key: None,
+					text_preview: Some("# Notes\n\nHello".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "sub".into(),
+					file_name: "subtitles.srt".into(),
+					mime: "application/x-subrip".into(),
+					s3_key: None,
+					text_preview: Some("1\n00:00:00,000 --> 00:00:02,000\nHello".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "log".into(),
+					file_name: "server.log".into(),
+					mime: "text/plain".into(),
+					s3_key: None,
+					text_preview: Some("Started".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "csv".into(),
+					file_name: "data.csv".into(),
+					mime: "text/csv".into(),
+					s3_key: None,
+					text_preview: Some("name,value\nok,true".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "json".into(),
+					file_name: "data.json".into(),
+					mime: "application/json".into(),
+					s3_key: None,
+					text_preview: Some("{\"ok\": true}".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "yaml".into(),
+					file_name: "data.yaml".into(),
+					mime: "application/yaml".into(),
+					s3_key: None,
+					text_preview: Some("ok: true".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "xml".into(),
+					file_name: "data.xml".into(),
+					mime: "application/xml".into(),
+					s3_key: None,
+					text_preview: Some("<ok>true</ok>".into()),
+					archive_tree: None,
+				},
+				Resource {
+					hash: "zip".into(),
+					file_name: "archive.zip".into(),
+					mime: "application/zip".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: Some("docs/\ndocs/readme.txt".into()),
 				},
 			],
 		},
