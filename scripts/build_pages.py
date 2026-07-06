@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -12,6 +13,7 @@ WEB = ROOT / 'web'
 OUTPUT = ROOT / 'dist' / 'pages'
 
 DEFAULT_API_BASE_URL = ''
+HTML_TEMPLATES = ('index.html', 'admin.html', 'pricing.html')
 MINIFIED_ASSETS = {
 	'admin.js': 'admin.min.js',
 	'app.css': 'app.min.css',
@@ -50,6 +52,15 @@ def copy_asset(name: str) -> None:
 	shutil.copy2(WEB / source, OUTPUT / name)
 
 
+def minify_html(names: tuple[str, ...]) -> None:
+	"""Minify rendered HTML with the project npm tooling."""
+	subprocess.run(
+		['node', str(ROOT / 'scripts' / 'minify-html.mjs')]
+		+ [str(OUTPUT / name) for name in names],
+		check=True,
+	)
+
+
 def validate_output() -> None:
 	"""Fail the build if an HTML template placeholder leaked into Pages output."""
 	placeholder = re.compile(r'__[A-Z0-9_]+__')
@@ -66,8 +77,9 @@ def main() -> int:
 	OUTPUT.mkdir(parents=True)
 
 	values = replacements()
-	for name in ('index.html', 'admin.html', 'pricing.html'):
+	for name in HTML_TEMPLATES:
 		render_template(name, values)
+	minify_html(HTML_TEMPLATES)
 	for name in ('app.css', 'admin.js', 'favicon.svg'):
 		copy_asset(name)
 

@@ -37,6 +37,8 @@ jobs:
         run: npm run check:minified
       - name: Build GitHub Pages artifact
         run: python scripts/build_pages.py
+      - name: Test Pages build scripts
+        run: python -m unittest discover -s tests -p 'test_*.py'
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -71,6 +73,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
+      - name: Node toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install asset tooling
+        run: npm ci
       - name: Build GitHub Pages artifact
         env:
           EVERPUBLICH_PAGES_API_BASE_URL: ${{ vars.EVERPUBLICH_PAGES_API_BASE_URL }}

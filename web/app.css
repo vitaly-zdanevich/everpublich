@@ -75,7 +75,6 @@ main {
 	display: flex;
 	align-items: center;
 	padding: 44px 0;
-	border-bottom: 1px solid var(--line);
 }
 
 .hero-copy {
@@ -173,7 +172,6 @@ button:disabled {
 
 .band {
 	padding: 48px 0;
-	border-bottom: 1px solid var(--line);
 }
 
 .feature-grid {
@@ -192,6 +190,11 @@ button:disabled {
 	border: 1px solid var(--line);
 	border-radius: 8px;
 	padding: 18px;
+}
+
+.landing-support {
+	padding: 16px 0 48px;
+	color: var(--muted);
 }
 
 .admin-layout {
