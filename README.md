@@ -12,7 +12,7 @@
 [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
 [![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=vitaly-zdanevich_everpublich&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=vitaly-zdanevich_everpublich)
 
-Everpublich is a free MVP test pilot that turns an [Evernote](https://evernote.com/) notebook into a fast static [Zola](https://www.getzola.org/) blog or website. It aims to be a better version of [Postach.io](https://postach.io/) and [NotesRSS](https://notesrss.com/): RSS, tags, static search, calendar, podcast feed, media playback, expanded links-to-widgets, backup value, and generated static websites served from one Oracle Cloud ARM VM or mirrored to GitHub.
+Everpublich is a free MVP test pilot that turns an [Evernote](https://evernote.com/) notebook into a fast static [Zola](https://www.getzola.org/) blog or website. It aims to be a better version of [Postach.io](https://postach.io/) and [NotesRSS](https://notesrss.com/): RSS, tags, static search, calendar, podcast feed, media playback, expanded links-to-widgets, backup value, and generated static websites served from S3 through CloudFront or mirrored to GitHub.
 
 Free during the test stage.
 
@@ -20,9 +20,9 @@ I use Evernote from 2009 and love it.
 
 ## Product
 
-The current MVP avoids Evernote OAuth because Evernote no longer issues legacy API keys to new third-party services. Users share a notebook as read-only to the Everpublich service Evernote account. The official Evernote Linux client syncs that account on the VM, and Everpublich reads the client cache read-only to rebuild websites once per day.
+The current MVP avoids Evernote OAuth because Evernote no longer issues legacy API keys to new third-party services. Users share a notebook as read-only to the Everpublich service Evernote account. The official Evernote Linux client syncs that account on the EC2 builder, and Everpublich reads the client cache read-only to rebuild websites once per hour.
 
-User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media live on the same VM under nginx. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
+User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media are synced to a private S3 bucket and served through CloudFront. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
 
 The public landing page can still be published to [GitHub Pages](https://docs.github.com/en/pages) from GitHub Actions. For the free MVP, it asks users to share a notebook read-only with `everpublich@proton.me`; Everpublich will email the generated website link after the first sync.
 
@@ -31,18 +31,19 @@ The public landing page can still be published to [GitHub Pages](https://docs.gi
 ```mermaid
 flowchart TD
 	User[User browser] --> Landing[GitHub Pages landing and admin shell]
-	Landing --> VmApi[Rust API on Oracle ARM VM]
+	Landing --> VmApi[Rust API on EC2 builder]
 	User --> Share[Share notebook read-only]
 	Share --> ServiceAccount[Everpublich service Evernote account]
 	ServiceAccount --> EvernoteClient[Official Evernote Linux client]
 	EvernoteClient --> EvernoteCache[(Evernote SQLite/cache files)]
 	VmApi --> Users[(SQLite users/settings)]
-	Timer[systemd daily timer] --> Builder[Rust full-regeneration worker]
+	Timer[systemd hourly timer] --> Builder[Rust full-regeneration worker]
 	Users --> Builder
 	EvernoteCache --> Builder
 	Builder --> Zola[Zola source tree]
-	Zola --> NginxRoot[/nginx static site root/]
-	NginxRoot --> Site[User static website]
+	Zola --> S3[(Private S3 generated-sites bucket)]
+	S3 --> CloudFront[CloudFront CDN]
+	CloudFront --> Site[User static website]
 	Builder --> GitRepo[Optional GitHub repo backup]
 ```
 
@@ -61,7 +62,7 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 
 ## Website features
 
-- Full static regeneration once per day.
+- Full static regeneration once per hour.
 - [Zola](https://www.getzola.org/) site generation with `minify_html = true`.
 - Use any [Zola theme](https://www.getzola.org/themes/) or add custom CSS.
 - I can develop a custom visual theme for you.
@@ -80,7 +81,7 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - Optional Google Analytics and Yandex Metrica.
 - Mobile-friendly design with black dark mode via `prefers-color-scheme`.
 - Offline support in the browser.
-- Minimal JavaScript, static HTML, minified output, gzip, precompressed assets, and an optional free CDN later through Cloudflare or another DNS/CDN provider.
+- Minimal JavaScript, static HTML, minified output, and CloudFront gzip/Brotli compression.
 - Backup value: the generated site and optional GitHub repository become another copy of the Evernote notebook.
 
 ## Widget expansion
@@ -119,18 +120,14 @@ The admin panel can connect GitHub OAuth and switch backup repository visibility
 
 ## Subdomains
 
-Automatic per-user subdomains are feasible on the VM. After buying the TLD, create DNS records at any registrar or DNS provider:
+Automatic per-user subdomains are feasible through CloudFront. After buying the TLD and creating an ACM certificate in `us-east-1`, set `cloudfront_aliases` and create DNS records at any registrar or DNS provider:
 
-- `A everpublich.xyz -> VM_PUBLIC_IP`
-- `A *.everpublich.xyz -> VM_PUBLIC_IP`
+- `CNAME *.everpublich.xyz -> CLOUDFRONT_DOMAIN`
+- `ALIAS/ANAME everpublich.xyz -> CLOUDFRONT_DOMAIN`, if you decide to move the root domain from GitHub Pages later
 
-Registering the TLD outside AWS can be cheaper than using Route 53 as a registrar. With the VM design, AWS is not required. Until the domain is bought, test with the VM public IP, a local hosts entry, or a request header:
+Registering the TLD outside AWS can be cheaper than using Route 53 as a registrar. The landing page stays on GitHub Pages. Until the domain is bought, test generated sites with the CloudFront URL, for example `https://CLOUDFRONT_DOMAIN/demo/`.
 
-```sh
-curl -H 'Host: demo.everpublich.xyz' http://VM_PUBLIC_IP/
-```
-
-For production HTTPS, add Caddy, certbot, or a CDN such as Cloudflare after the domain exists.
+CloudFront can automatically compress eligible objects with gzip and Brotli. Everpublich still asks Zola to minify HTML.
 
 ## Similar products
 
@@ -213,31 +210,33 @@ zola --root build/mock-site serve
 
 The end-to-end HTML test runs `zola build`, so install [Zola](https://www.getzola.org/documentation/getting-started/installation/) before `cargo test --all-targets`.
 
-## Oracle Cloud ARM VM deployment
+## AWS EC2 builder deployment
 
-The Terraform in `infra/` provisions one OCI Ampere A1 ARM VM, a VCN, a public subnet, HTTP/HTTPS/SSH security rules, nginx, SQLite, a daily systemd timer, and directories for the official Evernote client cache and generated websites.
+The Terraform in `infra/` provisions one EC2 builder, a VPC, a public IPv6 subnet, a private S3 bucket for generated static websites, CloudFront with Origin Access Control, SQLite, an hourly systemd timer, and directories for the official Evernote client cache and generated websites.
 
-Oracle’s current Always Free documentation says Ampere A1 gives 2 OCPUs and 12 GB RAM total for Always Free tenancies, and the account has 200 GB total Always Free block storage. This repo defaults to one `VM.Standard.A1.Flex` instance using those free limits.
+The default instance is `m7i-flex.large` with 2 vCPU and 8 GiB RAM. Public IPv4 is disabled by default because AWS charges hourly for it. IPv6 is enabled by default. The repo keeps the classic 30 GiB EBS allowance split as 10 GiB root plus a 20 GiB Btrfs data volume mounted with `compress-force=zstd:15`.
 
-Create `infra/terraform.tfvars` from `infra/terraform.tfvars.example`, set your OCI OCIDs and an Always Free eligible Ubuntu AArch64 image OCID, then:
+AWS currently lists CloudFront Free plan allowances as 100 GB data transfer, 1M requests, and 5 GB included S3 storage per month. Generated sites should stay inside that during the MVP if media usage is modest.
+
+Create `infra/terraform.tfvars` from `infra/terraform.tfvars.example`, review the region and SSH key path, then:
 
 ```sh
 ./scripts/deploy.sh
 ```
 
-If OCI reports out of host capacity, try another `availability_domain_index` or retry later. Keep `region` set to your OCI home region for Always Free resources.
+If bootstrap cannot download GitHub/rustup/AppImage assets over IPv6, temporarily set `associate_public_ipv4 = true`, apply, complete bootstrap, then switch it back to `false` to avoid the public IPv4 hourly charge.
 
 Scripts:
 
-- `scripts/deploy.sh` runs Terraform for the Oracle Cloud VM.
-- `scripts/update-code.sh` SSHes into the VM, pulls the repo, builds `everpublich-cli` on ARM, installs it, and starts the sync service.
+- `scripts/deploy.sh` runs Terraform for the AWS EC2/S3/CloudFront stack.
+- `scripts/update-code.sh` SSHes into the EC2 builder, pulls the repo, builds `everpublich-cli`, installs it, and starts the sync service.
 - `scripts/show-logs.sh` reads `journalctl` logs for `everpublich-sync.service` over SSH.
 - `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
 
 Evernote AppImage login is interactive. After deployment, connect with SSH X forwarding, run the helper in your forwarded X session, log in once, then restart the background service:
 
 ```sh
-ssh -Y ubuntu@VM_PUBLIC_IP
+ssh -Y ubuntu@EC2_HOST
 /opt/everpublich/bin/evernote-run-ssh-x
 sudo systemctl start evernote-client.service
 ```
@@ -245,14 +244,13 @@ sudo systemctl start evernote-client.service
 Example:
 
 ```sh
-EVERPUBLICH_SSH_HOST=VM_PUBLIC_IP ./scripts/update-code.sh
-EVERPUBLICH_SSH_HOST=VM_PUBLIC_IP ./scripts/show-logs.sh
+EVERPUBLICH_SSH_HOST=EC2_HOST ./scripts/update-code.sh
+EVERPUBLICH_SSH_HOST=EC2_HOST ./scripts/show-logs.sh
 ```
 
 CI publishes GitHub Pages on pushes to `main`. Optional repository variables:
 
 - `EVERPUBLICH_PAGES_API_BASE_URL` - VM API base URL used by the connect/admin browser calls.
-- `EVERPUBLICH_PAGES_BASE_DOMAIN` - domain shown in the landing page subdomain hint.
 
 CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.properties` points SonarCloud at that report.
 
@@ -262,11 +260,15 @@ CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.pro
 - [Evernote notebook sharing](https://dev.evernote.com/doc/articles/notebook_sharing.php)
 - [Zola documentation](https://www.getzola.org/documentation/getting-started/overview/)
 - [Zola themes](https://www.getzola.org/themes/)
-- [Oracle Cloud Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
-- [Terraform OCI provider](https://registry.terraform.io/providers/oracle/oci/latest/docs)
-- [OCI compute instances](https://docs.oracle.com/en-us/iaas/Content/Compute/Concepts/computeoverview.htm)
+- [Amazon EC2 instance types](https://aws.amazon.com/ec2/instance-types/)
+- [Amazon EBS pricing](https://aws.amazon.com/ebs/pricing/)
+- [Amazon S3 pricing](https://aws.amazon.com/s3/pricing/)
+- [Amazon CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/)
+- [CloudFront compression](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/ServingCompressedFiles.html)
+- [CloudFront Origin Access Control for S3](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)
+- [Terraform AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
 - [SQLite documentation](https://www.sqlite.org/docs.html)
-- [nginx documentation](https://nginx.org/en/docs/)
+- [Btrfs documentation](https://btrfs.readthedocs.io/)
 
 ## Support
 
