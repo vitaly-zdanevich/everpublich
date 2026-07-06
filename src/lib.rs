@@ -12,6 +12,7 @@ pub mod crypto;
 pub mod enml;
 pub mod evernote;
 pub mod evernote_api;
+pub mod evernote_cache;
 pub mod github;
 pub mod models;
 pub mod slug;

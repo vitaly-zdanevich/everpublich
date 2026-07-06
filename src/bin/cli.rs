@@ -7,6 +7,7 @@ use everpublich::evernote_api::{
 	DEFAULT_USER_STORE_URL, EvernoteApiClient, LinkedNotebookFailure, LinkedNotebookProbe,
 	LinkedNotebookSummary,
 };
+use everpublich::evernote_cache::{RebuildOptions, rebuild_all};
 use everpublich::models::{BuildState, EvernoteAccessMode, Note, Resource, SiteSettings, UserItem};
 use everpublich::zola::write_zola_site;
 use std::path::PathBuf;
@@ -44,6 +45,28 @@ enum Command {
 		#[arg(long, default_value_t = 5)]
 		max_sample_notes: i32,
 	},
+	/// Rebuild all websites from the official Evernote desktop cache.
+	RebuildAll {
+		/// SQLite database with Everpublich users and settings.
+		#[arg(long)]
+		database: PathBuf,
+		/// Evernote config directory owned by the service user.
+		#[arg(long)]
+		evernote_config_dir: PathBuf,
+		/// Root directory where per-site Zola trees are generated.
+		#[arg(long)]
+		sites_dir: PathBuf,
+		/// Future wildcard domain used after DNS is configured.
+		#[arg(
+			long,
+			env = "EVERPUBLICH_BASE_DOMAIN",
+			default_value = "everpublich.xyz"
+		)]
+		base_domain: String,
+		/// Current CloudFront URL used before wildcard DNS exists.
+		#[arg(long, env = "EVERPUBLICH_CLOUDFRONT_URL")]
+		cloudfront_url: Option<String>,
+	},
 }
 
 fn main() -> Result<()> {
@@ -59,7 +82,41 @@ fn main() -> Result<()> {
 			note_store_url,
 			max_sample_notes,
 		} => evernote_shared_notebooks(token, user_store_url, note_store_url, max_sample_notes),
+		Command::RebuildAll {
+			database,
+			evernote_config_dir,
+			sites_dir,
+			base_domain,
+			cloudfront_url,
+		} => rebuild_all_sites(
+			database,
+			evernote_config_dir,
+			sites_dir,
+			base_domain,
+			cloudfront_url,
+		),
 	}
+}
+
+fn rebuild_all_sites(
+	database: PathBuf,
+	evernote_config_dir: PathBuf,
+	sites_dir: PathBuf,
+	base_domain: String,
+	cloudfront_url: Option<String>,
+) -> Result<()> {
+	let summary = rebuild_all(&RebuildOptions {
+		database,
+		evernote_config_dir,
+		sites_dir,
+		base_domain,
+		cloudfront_url,
+	})?;
+	println!(
+		"Rebuild finished: {} notebook(s), {} note(s), {} built, {} failed",
+		summary.notebooks_seen, summary.notes_seen, summary.sites_built, summary.sites_failed
+	);
+	Ok(())
 }
 
 fn evernote_shared_notebooks(
