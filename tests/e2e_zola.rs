@@ -58,6 +58,12 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "list-style:none");
 	assert_contains(&style, "#search-results li:hover");
 	assert_contains(&style, ".post-nav");
+	assert_contains(&style, "min-height:100vh");
+	assert_contains(
+		&style,
+		"main{flex-direction:column;flex:1 0 auto;display:flex}",
+	);
+	assert_contains(&style, "margin:auto 0 0;padding-top:36px");
 	assert_contains(&style, "::selection");
 	assert_contains(&style, "background-color:#292");
 
@@ -75,6 +81,11 @@ fn zola_build_renders_public_html() {
 		&first_post,
 		"Linked Note\nLinked from another note.\nSecond tooltip line.\nQuoted tooltip line\nMore quote.",
 	);
+	let linked_post = read(&public, "posts/linked-note/index.html");
+	assert_contains(&linked_post, ">Newer<");
+	assert_contains(&linked_post, ">Older<");
+	assert_not_contains(&linked_post, ">Previous<");
+	assert_not_contains(&linked_post, ">Next<");
 
 	let media_post = read(&public, "posts/media-note/index.html");
 	assert_contains(&media_post, "<audio controls");

@@ -28,10 +28,19 @@
 body {
 	margin: 0 auto;
 	width: 95vw;
+	min-height: 100vh;
 	padding: 18px;
+	display: flex;
+	flex-direction: column;
 	background: var(--bg);
 	color: var(--fg);
 	font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+	flex: 1 0 auto;
+	display: flex;
+	flex-direction: column;
 }
 
 a {
@@ -272,7 +281,8 @@ pre code {
 	display: flex;
 	justify-content: space-between;
 	gap: 12px;
-	margin: 36px 0 0;
+	margin: auto 0 0;
+	padding-top: 36px;
 }
 
 .post-nav__link {

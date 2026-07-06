@@ -992,8 +992,8 @@ const POST_HTML: &str = r#"{% extends "base.html" %}
 </article>
 {% if page.higher or page.lower %}
 <nav class='post-nav' aria-label='Post navigation'>
-  {% if page.higher %}<a class='post-nav__link post-nav__link--prev' href='{{ page.higher.permalink | safe }}' title='{{ page.higher.extra.nav_title }}'><span>Previous</span><strong>{{ page.higher.title }}</strong></a>{% endif %}
-  {% if page.lower %}<a class='post-nav__link post-nav__link--next' href='{{ page.lower.permalink | safe }}' title='{{ page.lower.extra.nav_title }}'><span>Next</span><strong>{{ page.lower.title }}</strong></a>{% endif %}
+  {% if page.higher %}<a class='post-nav__link post-nav__link--prev' href='{{ page.higher.permalink | safe }}' title='{{ page.higher.extra.nav_title }}'><span>Newer</span><strong>{{ page.higher.title }}</strong></a>{% endif %}
+  {% if page.lower %}<a class='post-nav__link post-nav__link--next' href='{{ page.lower.permalink | safe }}' title='{{ page.lower.extra.nav_title }}'><span>Older</span><strong>{{ page.lower.title }}</strong></a>{% endif %}
 </nav>
 {% endif %}
 {% endblock content %}
