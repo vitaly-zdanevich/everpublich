@@ -2,8 +2,8 @@
 //!
 //! This module is intentionally small and read-only. It exists to validate the
 //! service-account plan where users share notebooks to one Everpublich Evernote
-//! account. The current VM MVP reads the official client cache, while this module
-//! remains useful for accounts that still have a developer token.
+//! account. The current VM MVP uses this API path when the service-account token
+//! is configured.
 
 use anyhow::{Context, Result, anyhow};
 use evernote_edam::note_store::{
@@ -134,6 +134,24 @@ where
 			.collect()
 	}
 
+	/// Download every note and resource body from notebooks shared to the token owner.
+	pub fn download_linked_notebooks(
+		&self,
+		max_notes_per_notebook: Option<i32>,
+	) -> Result<Vec<DownloadedLinkedNotebook>> {
+		let mut account_note_store = self.note_store_client()?;
+		let linked_notebooks = account_note_store
+			.list_linked_notebooks(self.token.clone())
+			.map_err(|error| {
+				anyhow!("Evernote API error while listing linked notebooks: {error}")
+			})?;
+		let mut downloaded = Vec::new();
+		for linked in linked_notebooks {
+			downloaded.push(self.download_linked_notebook(linked, max_notes_per_notebook)?);
+		}
+		Ok(downloaded)
+	}
+
 	/// List notebooks shared to the token owner and keep per-notebook failures.
 	pub fn linked_notebook_probes(
 		&self,
@@ -206,6 +224,42 @@ where
 			notebook_modifiable: authenticated.shared.notebook_modifiable.unwrap_or(false),
 			total_notes: note_list.total_notes,
 			sample_notes: note_list.notes.into_iter().map(NoteSummary::from).collect(),
+		})
+	}
+
+	fn download_linked_notebook(
+		&self,
+		linked: LinkedNotebook,
+		max_notes_per_notebook: Option<i32>,
+	) -> Result<DownloadedLinkedNotebook> {
+		let note_store_url = required_non_empty(
+			linked.note_store_url.clone(),
+			"linked notebook did not include a NoteStore URL",
+		)?;
+		let candidates = shared_notebook_key_candidates(&linked);
+		if candidates.is_empty() {
+			return Err(anyhow!(
+				"linked notebook did not include a shared notebook global ID or URI"
+			));
+		}
+
+		let mut authenticated =
+			self.authenticate_to_linked_notebook(&note_store_url, &candidates)?;
+		let notebook_guid = required_non_empty(
+			authenticated.shared.notebook_guid.clone(),
+			"shared notebook did not include a notebook GUID",
+		)?;
+		let notes = download_shared_notebook_notes(
+			&mut authenticated,
+			&notebook_guid,
+			max_notes_per_notebook,
+		)?;
+
+		Ok(DownloadedLinkedNotebook {
+			share_name: linked.share_name,
+			owner_username: linked.username,
+			notebook_guid,
+			notes,
 		})
 	}
 
@@ -321,6 +375,76 @@ where
 	}
 }
 
+fn download_shared_notebook_notes<C>(
+	authenticated: &mut AuthenticatedSharedNotebook<C>,
+	notebook_guid: &str,
+	max_notes_per_notebook: Option<i32>,
+) -> Result<Vec<DownloadedNote>>
+where
+	C: ThriftHttpClient,
+{
+	let max_notes_per_notebook = max_notes_per_notebook
+		.filter(|max_notes| *max_notes >= 0)
+		.unwrap_or(i32::MAX);
+	let page_size = 100;
+	let mut offset = 0;
+	let mut downloaded = Vec::new();
+
+	while offset < max_notes_per_notebook {
+		let remaining = max_notes_per_notebook - offset;
+		let limit = remaining.min(page_size);
+		let note_list = authenticated
+			.note_store
+			.find_notes_metadata(
+				authenticated.token.clone(),
+				NoteFilter {
+					notebook_guid: Some(notebook_guid.to_string()),
+					..NoteFilter::default()
+				},
+				offset,
+				limit,
+				note_metadata_result_spec(),
+			)
+			.map_err(|error| anyhow!("Evernote API error while reading note metadata: {error}"))?;
+		if note_list.notes.is_empty() {
+			break;
+		}
+
+		for metadata in note_list.notes {
+			let note = authenticated
+				.note_store
+				.get_note(
+					authenticated.token.clone(),
+					metadata.guid.clone(),
+					true,
+					true,
+					false,
+					false,
+				)
+				.map_err(|error| {
+					anyhow!(
+						"Evernote API error while downloading note {}: {error}",
+						metadata.guid
+					)
+				})?;
+			let tag_names = note.tag_names.clone().unwrap_or_else(|| {
+				authenticated
+					.note_store
+					.get_note_tag_names(authenticated.token.clone(), metadata.guid.clone())
+					.unwrap_or_default()
+			});
+			downloaded.push(DownloadedNote { note, tag_names });
+		}
+
+		offset += limit;
+		if offset >= note_list.total_notes {
+			break;
+		}
+	}
+
+	Ok(downloaded)
+}
+
 struct AuthenticatedSharedNotebook<C>
 where
 	C: ThriftHttpClient,
@@ -328,6 +452,28 @@ where
 	note_store: NoteStoreSyncClient<InputProtocol<C>, OutputProtocol<C>>,
 	token: String,
 	shared: types::SharedNotebook,
+}
+
+#[derive(Debug, Clone)]
+/// Full shared notebook payload downloaded from Evernote.
+pub struct DownloadedLinkedNotebook {
+	/// Display name of the shared notebook in the recipient account.
+	pub share_name: Option<String>,
+	/// Evernote username of the notebook owner, when returned.
+	pub owner_username: Option<String>,
+	/// Owner-side notebook GUID returned after shared-notebook auth.
+	pub notebook_guid: String,
+	/// Full notes downloaded from the shared notebook.
+	pub notes: Vec<DownloadedNote>,
+}
+
+#[derive(Debug, Clone)]
+/// Full Evernote note plus best-effort tag names.
+pub struct DownloadedNote {
+	/// Evernote note with content and resource bodies.
+	pub note: types::Note,
+	/// Tag names returned by Evernote when available.
+	pub tag_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

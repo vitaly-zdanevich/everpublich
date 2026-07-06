@@ -20,7 +20,7 @@ I use Evernote from 2009 and love it.
 
 ## Product
 
-The current MVP avoids Evernote OAuth because Evernote no longer issues legacy API keys to new third-party services. Users share a notebook as read-only to the Everpublich service Evernote account. The official Evernote Linux client syncs that account on the EC2 builder, and Everpublich reads the client cache read-only to rebuild websites once per hour.
+The current MVP cannot register a new Evernote OAuth application because Evernote no longer issues legacy API keys to new third-party services. Users share a notebook read-only to the Everpublich service Evernote account. The service account is authorized once with [Reeknote](https://github.com/vitaly-zdanevich/reeknote), and the EC2 builder reads shared notebooks through the Evernote API to rebuild websites once per hour.
 
 User and site settings live in SQLite, not DynamoDB. Generated static websites and copied media are synced to a private S3 bucket and served through CloudFront. The default home page shows full posts, with a SQLite preference to switch the home page to titles only.
 
@@ -34,12 +34,12 @@ flowchart TD
 	Landing --> VmApi[Rust API on EC2 builder]
 	User --> Share[Share notebook read-only]
 	Share --> ServiceAccount[Everpublich service Evernote account]
-	ServiceAccount --> EvernoteClient[Official Evernote Linux client]
-	EvernoteClient --> EvernoteCache[(Evernote SQLite/cache files)]
+	ServiceAccount --> Reeknote[Reeknote OAuth token]
+	Reeknote --> EvernoteApi[Evernote EDAM API]
 	VmApi --> Users[(SQLite users/settings)]
 	Timer[systemd hourly timer] --> Builder[Rust full-regeneration worker]
 	Users --> Builder
-	EvernoteCache --> Builder
+	EvernoteApi --> Builder
 	Builder --> Zola[Zola source tree]
 	Zola --> S3[(Private S3 generated-sites bucket)]
 	S3 --> CloudFront[CloudFront CDN]
@@ -49,16 +49,15 @@ flowchart TD
 
 ## Evernote access
 
-The official API path is blocked for new Evernote developers today, so the MVP uses a service account and shared notebooks:
+New Evernote API applications are blocked for new developers today, so the MVP uses a service account, shared notebooks, and a legacy OAuth application token obtained through Reeknote:
 
 - The user creates or chooses a notebook intended for publishing.
 - The user shares that notebook read-only to the Everpublich service Evernote account.
-- The official Evernote client syncs the shared notebook on the VM.
-- The Rust parser reads the local Evernote cache and SQLite files read-only.
+- Reeknote authorizes the service account and stores the Evernote OAuth token.
+- Everpublich uses that token to read linked/shared notebooks through the Evernote EDAM API.
+- Evernote does not expose tags for shared notes reliably, so Everpublich parses final-line `#tags` and `slug:` metadata from note content.
 
-Local inspection of the official Linux client shows SQLite databases under `~/.config/Evernote/conduit-storage/.../*.sql`, with note, notebook, tag, attachment, and offline search tables. Note bodies and resource data are also cached under `conduit-fs`. This is a private client storage format, so the parser must be defensive, tested against snapshots, and pinned to a known client version.
-
-The parser must never modify Evernote cache files. For reliable reads, it should copy SQLite databases to a temporary snapshot before querying, especially if the desktop client is running and using WAL files.
+The old official-client cache reader remains as a fallback/debug path, but the API path is preferred because it avoids GUI login, black Electron windows, lazy attachment downloads, and private client SQLite formats.
 
 ## Website features
 
@@ -261,7 +260,7 @@ The end-to-end HTML test runs `zola build`, so install [Zola](https://www.getzol
 
 ## AWS EC2 builder deployment
 
-The Terraform in `infra/` provisions one EC2 builder, a VPC, a public IPv6 subnet, a private S3 bucket for generated static websites, CloudFront with Origin Access Control, SQLite, an hourly systemd timer, and directories for the official Evernote client cache and generated websites.
+The Terraform in `infra/` provisions one EC2 builder, a VPC, a public IPv6 subnet, a private S3 bucket for generated static websites, CloudFront with Origin Access Control, SQLite, an hourly systemd timer, and directories for generated websites and temporary Evernote API downloads.
 
 The default instance is `m7i-flex.large` with 2 vCPU and 8 GiB RAM. Public IPv4 is disabled by default because AWS charges hourly for it. IPv6 is enabled by default. The repo keeps the classic 30 GiB EBS allowance split as 10 GiB root plus a 20 GiB Btrfs data volume mounted with `compress-force=zstd:15`.
 
@@ -282,15 +281,18 @@ Scripts:
 - `scripts/show-logs.sh` reads `journalctl` logs for `everpublich-sync.service` over SSH.
 - `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
 
-Evernote AppImage login is interactive. After deployment, connect with SSH X forwarding, run the helper in your forwarded X session, log in once, then restart the background service:
+Authorize the Evernote service account with Reeknote, then put the resulting OAuth token into `/etc/everpublich/everpublich.env` as `EVERNOTE_SERVICE_TOKEN`. Reeknote can use a legacy OAuth application by setting `REEKNOTE_EVERNOTE_CONSUMER_KEY`, `REEKNOTE_EVERNOTE_CONSUMER_SECRET`, and `REEKNOTE_EVERNOTE_OAUTH_CALLBACK=nnoauth` during `reeknote login`.
 
 ```sh
-ssh -Y ubuntu@EC2_HOST
-/opt/everpublich/bin/evernote-run-ssh-x
-sudo systemctl start evernote-client.service
+sudo -H -u everpublich env HOME=/var/lib/everpublich \
+	REEKNOTE_APP_DIR=/var/lib/everpublich/.reeknote \
+	REEKNOTE_EVERNOTE_CONSUMER_KEY=... \
+	REEKNOTE_EVERNOTE_CONSUMER_SECRET=... \
+	REEKNOTE_EVERNOTE_OAUTH_CALLBACK=nnoauth \
+	/opt/everpublich/bin/reeknote login
 ```
 
-Example:
+After login, copy the stored token into the service env file without printing it in logs, then restart the sync timer/service.
 
 ```sh
 EVERPUBLICH_SSH_HOST=EC2_HOST ./scripts/update-code.sh

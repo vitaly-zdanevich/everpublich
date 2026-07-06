@@ -1,11 +1,12 @@
-//! Reader and builder for the official Evernote desktop cache.
+//! Reader and builder for Evernote-backed generated sites.
 //!
-//! Evernote no longer issues public API credentials for this SaaS shape, so the
-//! single-VM MVP runs the official client and treats its local SQLite cache as a
-//! read-only sync source. This module keeps that coupling isolated from the
-//! renderer and from the admin database.
+//! The preferred MVP path reads notebooks shared to the Everpublich service
+//! account through the Evernote API. The old official-client cache reader stays
+//! as a fallback/debug source. This module keeps those sync details isolated
+//! from the renderer and from the admin database.
 
 use crate::evernote::notes_to_posts;
+use crate::evernote_api::{DownloadedLinkedNotebook, DownloadedNote, EvernoteApiClient};
 use crate::models::{
 	BuildState, EvernoteAccessMode, IndexMode, Note, Post, PostKind, Resource, SearchMode,
 	SiteSettings, UserItem,
@@ -16,7 +17,7 @@ use crate::store::SqliteUserRow;
 use crate::zola::{GeneratedSite, write_zola_site};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
-use html_escape::{encode_double_quoted_attribute, encode_text};
+use html_escape::{decode_html_entities, encode_double_quoted_attribute, encode_text};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,7 +38,7 @@ use yrs::{
 pub struct RebuildOptions {
 	/// Everpublich SQLite database path.
 	pub database: PathBuf,
-	/// Evernote desktop config/cache directory.
+	/// Evernote desktop config/cache directory used by the fallback reader.
 	pub evernote_config_dir: PathBuf,
 	/// Root directory for generated per-site Zola source trees.
 	pub sites_dir: PathBuf,
@@ -45,6 +46,12 @@ pub struct RebuildOptions {
 	pub base_domain: String,
 	/// CloudFront URL used while wildcard DNS is not configured.
 	pub cloudfront_url: Option<String>,
+	/// OAuth token for the Evernote service account that receives shared notebooks.
+	pub evernote_service_token: Option<String>,
+	/// Evernote UserStore endpoint for the service-account token.
+	pub evernote_user_store_url: String,
+	/// Optional Evernote NoteStore endpoint when the shard URL is already known.
+	pub evernote_note_store_url: Option<String>,
 }
 
 /// Count summary returned by a full rebuild.
@@ -132,25 +139,33 @@ struct StoredSiteSettings {
 	expand_widgets: bool,
 }
 
-/// Rebuild all Zola websites from the current Evernote cache and persist build
-/// status in the Everpublich SQLite database.
+/// Rebuild all Zola websites from Evernote and persist build status in SQLite.
 pub fn rebuild_all(options: &RebuildOptions) -> Result<RebuildSummary> {
 	fs::create_dir_all(&options.sites_dir)
 		.with_context(|| format!("failed to create {}", options.sites_dir.display()))?;
 
 	let app_db = Connection::open(&options.database)
 		.with_context(|| format!("failed to open {}", options.database.display()))?;
-	let graph_dbs = discover_remote_graphs(&options.evernote_config_dir)?;
-	if graph_dbs.is_empty() {
-		bail!(
-			"no Evernote RemoteGraph SQLite cache found under {}",
-			options.evernote_config_dir.display()
-		);
-	}
 
 	let mut sites = Vec::new();
-	for graph_db in graph_dbs {
-		sites.extend(read_cache_sites(options, &app_db, &graph_db)?);
+	if let Some(token) = options
+		.evernote_service_token
+		.as_deref()
+		.map(str::trim)
+		.filter(|token| !token.is_empty())
+	{
+		sites.extend(read_api_sites(options, &app_db, token)?);
+	} else {
+		let graph_dbs = discover_remote_graphs(&options.evernote_config_dir)?;
+		if graph_dbs.is_empty() {
+			bail!(
+				"no Evernote RemoteGraph SQLite cache found under {}",
+				options.evernote_config_dir.display()
+			);
+		}
+		for graph_db in graph_dbs {
+			sites.extend(read_cache_sites(options, &app_db, &graph_db)?);
+		}
 	}
 	let allowed_slugs = sites
 		.iter()
@@ -223,6 +238,9 @@ fn prune_generated_sites(sites_dir: &Path, allowed_slugs: &BTreeSet<String>) -> 
 			continue;
 		}
 		let slug = entry.file_name().to_string_lossy().to_string();
+		if slug.starts_with('.') {
+			continue;
+		}
 		if !allowed_slugs.contains(&slug) {
 			fs::remove_dir_all(entry.path()).with_context(|| {
 				format!(
@@ -315,6 +333,254 @@ fn read_cache_sites(
 		}
 	}
 	Ok(sites)
+}
+
+fn read_api_sites(
+	options: &RebuildOptions,
+	app_db: &Connection,
+	token: &str,
+) -> Result<Vec<CacheSite>> {
+	let download_root = api_download_root(&options.sites_dir);
+	if download_root.exists() {
+		fs::remove_dir_all(&download_root)
+			.with_context(|| format!("failed to remove {}", download_root.display()))?;
+	}
+	fs::create_dir_all(&download_root)
+		.with_context(|| format!("failed to create {}", download_root.display()))?;
+
+	let client = EvernoteApiClient::new(
+		token.to_string(),
+		Some(options.evernote_user_store_url.clone()),
+		options.evernote_note_store_url.clone(),
+	)?;
+	let notebooks = client.download_linked_notebooks(None)?;
+	notebooks
+		.into_iter()
+		.filter_map(|notebook| {
+			match api_notebook_to_site(options, app_db, &download_root, notebook) {
+				Ok(Some(site)) => Some(Ok(site)),
+				Ok(None) => None,
+				Err(error) => Some(Err(error)),
+			}
+		})
+		.collect()
+}
+
+fn api_download_root(sites_dir: &Path) -> PathBuf {
+	sites_dir.join(".evernote-api-resources")
+}
+
+fn api_notebook_to_site(
+	options: &RebuildOptions,
+	app_db: &Connection,
+	download_root: &Path,
+	notebook: DownloadedLinkedNotebook,
+) -> Result<Option<CacheSite>> {
+	let label = notebook
+		.share_name
+		.as_deref()
+		.map(str::trim)
+		.filter(|name| !name.is_empty())
+		.unwrap_or(&notebook.notebook_guid);
+	let mut settings = SiteSettings::new(label, &options.base_domain);
+	settings.notebook_guid = Some(notebook.notebook_guid.clone());
+	settings.notebook_name = Some(label.to_string());
+	settings.base_url = public_base_url(
+		&settings.subdomain,
+		&options.base_domain,
+		options.cloudfront_url.as_deref(),
+	);
+
+	let mut user = UserItem {
+		user_id: format!("evernote-api-{}", slugify(&notebook.notebook_guid)),
+		registration_date: Utc::now(),
+		evernote_user_id: notebook.owner_username,
+		evernote_access_mode: EvernoteAccessMode::SharedToServiceAccount,
+		evernote_token: None,
+		github_token: None,
+		settings,
+		build: BuildState::default(),
+		deleted_at: None,
+	};
+	apply_stored_settings(
+		app_db,
+		&mut user,
+		&options.base_domain,
+		options.cloudfront_url.as_deref(),
+	)?;
+
+	let notes = notebook
+		.notes
+		.into_iter()
+		.map(|note| api_note_to_cached_note(download_root, &notebook.notebook_guid, note))
+		.collect::<Result<Vec<_>>>()?;
+	Ok((!notes.is_empty()).then_some(CacheSite { user, notes }))
+}
+
+fn api_note_to_cached_note(
+	download_root: &Path,
+	notebook_guid: &str,
+	downloaded: DownloadedNote,
+) -> Result<CachedNote> {
+	let note = downloaded.note;
+	let guid = note
+		.guid
+		.clone()
+		.filter(|guid| !guid.trim().is_empty())
+		.ok_or_else(|| anyhow!("Evernote API note is missing a GUID"))?;
+	let title = clean_title(note.title.as_deref().unwrap_or("Untitled"));
+	let note_download_dir = download_root
+		.join(safe_file_name(notebook_guid, "notebook"))
+		.join(safe_file_name(&guid, "note"));
+	fs::create_dir_all(&note_download_dir)
+		.with_context(|| format!("failed to create {}", note_download_dir.display()))?;
+	let attachments = note
+		.resources
+		.unwrap_or_default()
+		.into_iter()
+		.map(|resource| api_resource_to_attachment(&note_download_dir, resource))
+		.collect::<Result<Vec<_>>>()?
+		.into_iter()
+		.flatten()
+		.collect::<Vec<_>>();
+	let resources = attachments
+		.iter()
+		.map(|attachment| attachment.resource.clone())
+		.collect::<Vec<_>>();
+
+	let content = note
+		.content
+		.as_deref()
+		.filter(|content| !content.trim().is_empty())
+		.unwrap_or("<en-note></en-note>");
+	let plain_text = enml_plain_text(content);
+	let (_, content_metadata) = extract_trailing_content_metadata(&plain_text);
+	let mut tags = Vec::new();
+	extend_unique_tags(&mut tags, downloaded.tag_names);
+	extend_unique_tags(&mut tags, content_metadata.tags);
+	let source_url = note
+		.attributes
+		.as_ref()
+		.and_then(|attributes| attributes.source_u_r_l.as_deref())
+		.filter(|url| !url.trim().is_empty())
+		.or(content_metadata.source_url.as_deref());
+	let enml = rich_text_to_enml(
+		content,
+		content_metadata.raw_line.as_deref(),
+		source_url,
+		&resources,
+	);
+	let created = note.created.or(note.updated).unwrap_or_default();
+	let updated = note.updated.or(note.created).unwrap_or(created);
+	let files = attachments
+		.into_iter()
+		.filter_map(|attachment| {
+			attachment
+				.source_path
+				.map(|source_path| CachedResourceFile {
+					file_name: attachment.resource.file_name.clone(),
+					original_file_name: attachment.resource.original_file_name.clone(),
+					source_path,
+					transform: attachment.transform,
+				})
+		})
+		.collect();
+
+	Ok(CachedNote {
+		note: Note {
+			guid,
+			title,
+			created: evernote_millis_to_utc(created)?,
+			updated: evernote_millis_to_utc(updated)?,
+			enml,
+			resources,
+			tags,
+		},
+		files,
+	})
+}
+
+fn api_resource_to_attachment(
+	note_download_dir: &Path,
+	resource: evernote_edam::types::Resource,
+) -> Result<Option<CachedAttachment>> {
+	let mime = resource
+		.mime
+		.as_deref()
+		.map(str::trim)
+		.filter(|mime| !mime.is_empty())
+		.unwrap_or("application/octet-stream")
+		.to_string();
+	let data = resource.data.unwrap_or_default();
+	let body = data.body.unwrap_or_default();
+	if body.is_empty() {
+		return Ok(None);
+	}
+	let hash = data
+		.body_hash
+		.as_deref()
+		.map(hex_lower)
+		.filter(|hash| !hash.is_empty())
+		.or_else(|| resource.guid.as_deref().map(slugify))
+		.unwrap_or_else(|| "resource".to_string());
+	let original_file_name = resource
+		.attributes
+		.as_ref()
+		.and_then(|attributes| attributes.file_name.as_deref())
+		.map(|file_name| safe_file_name(file_name, &hash))
+		.unwrap_or_else(|| resource_file_name_from_mime(&hash, &mime));
+	let source_path = note_download_dir.join(format!("{hash}-{original_file_name}"));
+	fs::write(&source_path, &body)
+		.with_context(|| format!("failed to write {}", source_path.display()))?;
+	let size_bytes = Some(data.size.unwrap_or(body.len() as i32).max(0) as u64);
+	let transform = resource_transform(&original_file_name, &mime, Some(&source_path));
+	let file_name = transformed_file_name(&original_file_name, &hash, transform);
+	let resource_mime = transformed_mime(&mime, transform);
+	let original_resource_file_name = preview_original_file_name(&original_file_name, transform);
+	let text_preview = Some(source_path.as_path())
+		.filter(|_| is_text_like_attachment(&file_name, &mime))
+		.and_then(read_text_preview);
+	let archive_tree = Some(source_path.as_path())
+		.filter(|_| is_archive_attachment(&file_name, &mime))
+		.and_then(read_archive_tree);
+
+	Ok(Some(CachedAttachment {
+		resource: Resource {
+			hash,
+			file_name,
+			original_file_name: original_resource_file_name,
+			mime: resource_mime,
+			s3_key: None,
+			text_preview,
+			archive_tree,
+			size_bytes,
+		},
+		source_path: Some(source_path),
+		transform,
+	}))
+}
+
+fn resource_file_name_from_mime(hash: &str, mime: &str) -> String {
+	let extension = match mime {
+		"application/pdf" => "pdf",
+		"audio/mpeg" => "mp3",
+		"image/jpeg" => "jpg",
+		"image/svg+xml" => "svg",
+		"text/plain" => "txt",
+		value => value
+			.rsplit_once('/')
+			.map(|(_, extension)| extension)
+			.unwrap_or("bin"),
+	};
+	safe_file_name(&format!("{hash}.{extension}"), hash)
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+	let mut output = String::with_capacity(bytes.len() * 2);
+	for byte in bytes {
+		output.push_str(&format!("{byte:02x}"));
+	}
+	output
 }
 
 fn read_notebooks(cache_db: &Connection) -> Result<Vec<CacheNotebook>> {
@@ -1875,6 +2141,20 @@ fn is_metadata_url(token: &str) -> bool {
 	token.starts_with("https://") || token.starts_with("http://")
 }
 
+fn enml_plain_text(enml: &str) -> String {
+	let block_breaks =
+		Regex::new(r"(?i)<br\s*/?>|</(?:div|p|li|tr|h[1-6]|blockquote|pre|en-note)>")
+			.expect("valid ENML block regex");
+	let with_breaks = block_breaks.replace_all(enml, "\n");
+	let tags = Regex::new(r"(?s)<[^>]+>").expect("valid ENML tag regex");
+	let text = tags.replace_all(&with_breaks, "");
+	decode_html_entities(&text)
+		.lines()
+		.map(str::trim)
+		.collect::<Vec<_>>()
+		.join("\n")
+}
+
 /// Convert plain text from the Evernote cache into the subset of ENML that the
 /// renderer already understands.
 fn plain_text_to_enml(text: &str, source_url: Option<&str>, resources: &[Resource]) -> String {
@@ -1935,6 +2215,17 @@ fn strip_trailing_metadata_enml(enml: &str, metadata_line: &str) -> String {
 		.unwrap();
 		if at_end.is_match(enml) {
 			return at_end.replace(enml, "").into_owned();
+		}
+
+		let exact_block = Regex::new(&format!(
+			r#"(?is)<{tag}\b[^>]*>\s*{escaped_line}\s*</{tag}>"#
+		))
+		.unwrap();
+		if let Some(block) = exact_block.find_iter(enml).last() {
+			let mut out = String::with_capacity(enml.len() - block.len());
+			out.push_str(&enml[..block.start()]);
+			out.push_str(&enml[block.end()..]);
+			return out;
 		}
 	}
 	enml.to_string()
@@ -2167,7 +2458,10 @@ fn sqlite_now() -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use evernote_edam::types as edam_types;
 	use pretty_assertions::assert_eq;
+
+	const TEST_USER_STORE_URL: &str = crate::evernote_api::DEFAULT_USER_STORE_URL;
 
 	#[test]
 	fn reads_cache_notebook_as_site() {
@@ -2190,6 +2484,121 @@ mod tests {
 		assert!(site.notes[0].note.enml.contains("Cached note body"));
 		assert_eq!(site.notes[0].files.len(), 1);
 		assert_eq!(site.notes[0].note.resources[0].size_bytes, Some(5));
+	}
+
+	#[test]
+	fn maps_api_note_to_cached_note_with_resources_and_body_tags() {
+		let temp = tempfile::tempdir().unwrap();
+		let note = edam_types::Note {
+			guid: Some("note-guid".into()),
+			title: Some(" API note ".into()),
+			content: Some(
+				r#"<en-note><div>Hello API</div><div>#postgres slug:api-note</div><en-media type="text/plain" hash="abcd"/></en-note>"#
+					.into(),
+			),
+			content_hash: None,
+			content_length: None,
+			created: Some(1_700_000_000_000),
+			updated: Some(1_700_000_100_000),
+			deleted: None,
+			active: Some(true),
+			update_sequence_num: None,
+			notebook_guid: Some("notebook-guid".into()),
+			tag_guids: None,
+			resources: Some(vec![edam_types::Resource {
+				guid: Some("resource-guid".into()),
+				note_guid: Some("note-guid".into()),
+				data: Some(edam_types::Data {
+					body_hash: Some(vec![0xab, 0xcd]),
+					size: Some(11),
+					body: Some(b"hello world".to_vec()),
+				}),
+				mime: Some("text/plain".into()),
+				width: None,
+				height: None,
+				duration: None,
+				active: Some(true),
+				recognition: None,
+				attributes: Some(edam_types::ResourceAttributes {
+					source_u_r_l: None,
+					timestamp: None,
+					latitude: None,
+					longitude: None,
+					altitude: None,
+					camera_make: None,
+					camera_model: None,
+					client_will_index: None,
+					reco_type: None,
+					file_name: Some("readme.txt".into()),
+					attachment: Some(true),
+					application_data: None,
+				}),
+				update_sequence_num: None,
+				alternate_data: None,
+			}]),
+			attributes: Some(edam_types::NoteAttributes {
+				subject_date: None,
+				latitude: None,
+				longitude: None,
+				altitude: None,
+				author: None,
+				source: None,
+				source_u_r_l: Some("https://example.com/source".into()),
+				source_application: None,
+				share_date: None,
+				reminder_order: None,
+				reminder_done_time: None,
+				reminder_time: None,
+				place_name: None,
+				content_class: None,
+				application_data: None,
+				last_edited_by: None,
+				classifications: None,
+				creator_id: None,
+				last_editor_id: None,
+				shared_with_business: None,
+				conflict_source_note_guid: None,
+				note_title_quality: None,
+			}),
+			tag_names: None,
+			shared_notes: None,
+			restrictions: None,
+			limits: None,
+		};
+
+		let cached = api_note_to_cached_note(
+			temp.path(),
+			"notebook-guid",
+			DownloadedNote {
+				note,
+				tag_names: Vec::new(),
+			},
+		)
+		.unwrap();
+
+		assert_eq!(cached.note.title, "API note");
+		assert_eq!(cached.note.tags, vec!["postgres", "slug:api-note"]);
+		assert!(cached.note.enml.contains("https://example.com/source"));
+		assert!(!cached.note.enml.contains("slug:api-note"));
+		assert_eq!(cached.note.resources[0].hash, "abcd");
+		assert_eq!(cached.note.resources[0].file_name, "readme.txt");
+		assert_eq!(
+			cached.note.resources[0].text_preview.as_deref(),
+			Some("hello world")
+		);
+		assert_eq!(cached.note.resources[0].size_bytes, Some(11));
+		assert_eq!(
+			fs::read(&cached.files[0].source_path).unwrap(),
+			b"hello world"
+		);
+	}
+
+	#[test]
+	fn keeps_api_downloads_in_hidden_sites_subdirectory() {
+		assert_eq!(
+			api_download_root(Path::new("/var/cache/everpublich/sites")),
+			Path::new("/var/cache/everpublich/sites/.evernote-api-resources")
+		);
 	}
 
 	#[test]
@@ -2738,6 +3147,9 @@ mod tests {
 				sites_dir: self.sites_dir.clone(),
 				base_domain: "everpublich.my".into(),
 				cloudfront_url: Some("https://d111111abcdef8.cloudfront.net/".into()),
+				evernote_service_token: None,
+				evernote_user_store_url: TEST_USER_STORE_URL.into(),
+				evernote_note_store_url: None,
 			}
 		}
 	}

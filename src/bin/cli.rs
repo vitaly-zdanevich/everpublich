@@ -45,7 +45,7 @@ enum Command {
 		#[arg(long, default_value_t = 5)]
 		max_sample_notes: i32,
 	},
-	/// Rebuild all websites from the official Evernote desktop cache.
+	/// Rebuild all websites from the Evernote API or desktop cache fallback.
 	RebuildAll {
 		/// SQLite database with Everpublich users and settings.
 		#[arg(long)]
@@ -66,6 +66,15 @@ enum Command {
 		/// Current CloudFront URL used before wildcard DNS exists.
 		#[arg(long, env = "EVERPUBLICH_CLOUDFRONT_URL")]
 		cloudfront_url: Option<String>,
+		/// Evernote service-account OAuth token used to read shared notebooks through the API.
+		#[arg(long, env = "EVERNOTE_SERVICE_TOKEN", hide_env_values = true)]
+		evernote_service_token: Option<String>,
+		/// Evernote UserStore URL.
+		#[arg(long, default_value = DEFAULT_USER_STORE_URL)]
+		evernote_user_store_url: String,
+		/// Optional NoteStore URL when you already know the shard endpoint.
+		#[arg(long)]
+		evernote_note_store_url: Option<String>,
 	},
 }
 
@@ -88,30 +97,24 @@ fn main() -> Result<()> {
 			sites_dir,
 			base_domain,
 			cloudfront_url,
-		} => rebuild_all_sites(
+			evernote_service_token,
+			evernote_user_store_url,
+			evernote_note_store_url,
+		} => rebuild_all_sites(RebuildOptions {
 			database,
 			evernote_config_dir,
 			sites_dir,
 			base_domain,
 			cloudfront_url,
-		),
+			evernote_service_token,
+			evernote_user_store_url,
+			evernote_note_store_url,
+		}),
 	}
 }
 
-fn rebuild_all_sites(
-	database: PathBuf,
-	evernote_config_dir: PathBuf,
-	sites_dir: PathBuf,
-	base_domain: String,
-	cloudfront_url: Option<String>,
-) -> Result<()> {
-	let summary = rebuild_all(&RebuildOptions {
-		database,
-		evernote_config_dir,
-		sites_dir,
-		base_domain,
-		cloudfront_url,
-	})?;
+fn rebuild_all_sites(options: RebuildOptions) -> Result<()> {
+	let summary = rebuild_all(&options)?;
 	println!(
 		"Rebuild finished: {} notebook(s), {} note(s), {} built, {} failed",
 		summary.notebooks_seen, summary.notes_seen, summary.sites_built, summary.sites_failed

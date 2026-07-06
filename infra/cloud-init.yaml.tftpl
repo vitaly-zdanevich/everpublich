@@ -44,6 +44,7 @@ write_files:
       EVERPUBLICH_SUPPORT_EMAIL='${support_email}'
       EVERPUBLICH_SUPPORT_TELEGRAM='${support_telegram}'
       EVERPUBLICH_SUPPORT_TICKETS='${support_tickets}'
+      EVERNOTE_SERVICE_TOKEN=''
 %{ if genius_token != "" ~}
       GENIUS_TOKEN='${genius_token}'
 %{ endif ~}
@@ -189,6 +190,7 @@ write_files:
       if [ -d "$EVERPUBLICH_SITES_DIR" ]; then
         aws s3 sync "$EVERPUBLICH_SITES_DIR/" "s3://$EVERPUBLICH_S3_BUCKET/" \
           --delete \
+          --exclude '.evernote-api-resources/*' \
           --cache-control 'public,max-age=3600'
         work_dir="$(mktemp -d)"
         cleanup() {
@@ -212,6 +214,9 @@ write_files:
         }
         find -L "$EVERPUBLICH_SITES_DIR" -type f -print0 | while IFS= read -r -d '' file; do
           relative="$(realpath --relative-to="$EVERPUBLICH_SITES_DIR" "$file")"
+          case "$relative" in
+            .evernote-api-resources/*) continue ;;
+          esac
           case "$relative" in
             *.html|*.htm|*.css|*.js|*.mjs|*.json|*.webmanifest|*.xml|*.rss|*.atom|*.svg|*.txt|*.text|*.log|*.csv|*.tsv|*.wasm) ;;
             *) continue ;;
