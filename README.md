@@ -82,7 +82,7 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - SVG is rendered directly; Adobe Illustrator, EPS, PS, and compressed SVG files get an AVIF preview plus the original file download.
 - Audio and video are playable in the browser.
 - GLB/GLTF, STL, OBJ, PLY, 3MF, DAE, FBX, 3DM, VOX, VTK/VTP, XYZ, and G-code 3D attachments are rotatable in the browser when browser loaders can read them.
-- Text, Markdown, RTF, logs, subtitle, CSV, JSON, YAML, TOML, and XML attachments are shown in a closed preview block with a download link.
+- PDF, Text, Markdown, RTF, logs, subtitle, CSV, JSON, YAML, TOML, and XML attachments are shown in a closed preview block with a download link.
 - ZIP, RAR, and TAR-family archives are copied and can show a closed file tree when the server can inspect them.
 - Internal Evernote note links become relative website links.
 - Evernote formatting is preserved as HTML, including fonts, sizes, colors, and tables.

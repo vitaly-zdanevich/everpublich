@@ -320,6 +320,11 @@ fn media_replacement(
 			r#"<details class="attachment-preview attachment-preview-archive"><summary>{title}</summary><pre>{}</pre><p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#,
 			preview_pre_text(tree)
 		)
+	} else if is_pdf(resource, mime) {
+		let title = encode_text(&resource.file_name);
+		format!(
+			r#"<details class="attachment-preview attachment-preview-pdf"><summary>{title}</summary><iframe src="{file}" title="{title}" loading="lazy"></iframe><p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#
+		)
 	} else if is_text_preview(resource, mime) {
 		let title = encode_text(&resource.file_name);
 		let body = resource
@@ -377,6 +382,11 @@ fn is_font(resource: &Resource, mime: &str) -> bool {
 		file_extension(&resource.file_name).as_deref(),
 		Some("ttf" | "otf" | "woff" | "woff2" | "eot")
 	)
+}
+
+fn is_pdf(resource: &Resource, mime: &str) -> bool {
+	mime.eq_ignore_ascii_case("application/pdf")
+		|| file_extension(&resource.file_name).as_deref() == Some("pdf")
 }
 
 fn is_swf(resource: &Resource, mime: &str) -> bool {
@@ -658,9 +668,18 @@ mod tests {
 				text_preview: None,
 				archive_tree: None,
 			},
+			Resource {
+				hash: "pdf".into(),
+				file_name: "document.pdf".into(),
+				original_file_name: None,
+				mime: "application/pdf".into(),
+				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
+			},
 		];
 		let body = enml_to_zola_body(
-			r#"<en-note><en-media type="text/markdown" hash="txt"/><en-media type="model/gltf-binary" hash="glb"/><en-media type="model/stl" hash="stl"/></en-note>"#,
+			r#"<en-note><en-media type="text/markdown" hash="txt"/><en-media type="model/gltf-binary" hash="glb"/><en-media type="model/stl" hash="stl"/><en-media type="application/pdf" hash="pdf"/></en-note>"#,
 			&resources,
 			&HashMap::new(),
 		);
@@ -669,6 +688,10 @@ mod tests {
 		assert!(body.contains("<pre># Notes&#10;&#10;Hello</pre>"));
 		assert!(body.contains(r#"{{ model_viewer(src="shape.glb", alt="shape.glb") }}"#));
 		assert!(body.contains(r#"{{ stl_viewer(src="mesh.stl", label="mesh.stl") }}"#));
+		assert!(body.contains(r#"<details class="attachment-preview attachment-preview-pdf">"#));
+		assert!(body.contains(
+			r#"<iframe src="document.pdf" title="document.pdf" loading="lazy"></iframe>"#
+		));
 	}
 
 	#[test]

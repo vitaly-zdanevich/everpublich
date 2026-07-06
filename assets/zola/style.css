@@ -554,7 +554,10 @@ blockquote:not(.instagram-media) > :last-child {
 }
 
 @media (prefers-color-scheme: dark) {
-	.embed-vk-playlist iframe {
+	.embed-vk-playlist iframe,
+	.embed-reddit iframe,
+	.embed-reddit-subreddit iframe,
+	.embed-reddit-subreddit .rembeddit {
 		filter: invert(1) hue-rotate(180deg);
 	}
 

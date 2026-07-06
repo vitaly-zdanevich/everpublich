@@ -105,7 +105,7 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, ".embed-vk-playlist iframe{height:450px}");
 	assert_contains(
 		&style,
-		".embed-vk-playlist iframe{filter:invert()hue-rotate(180deg)}",
+		".embed-vk-playlist iframe,.embed-reddit iframe,.embed-reddit-subreddit iframe,.embed-reddit-subreddit .rembeddit{filter:invert()hue-rotate(180deg)}",
 	);
 	assert_contains(&style, ".embed-mastodon-post iframe{height:520px}");
 	assert_contains(&style, ".mastodon-profile-card{");
@@ -178,6 +178,11 @@ fn zola_build_renders_public_html() {
 	assert_contains(&first_post, "class=evernote-callout");
 	assert_contains(&first_post, "This is my callout example");
 	assert_contains(&first_post, "src=photo.jpg");
+	assert_contains(
+		&first_post,
+		"<details class=\"attachment-preview attachment-preview-pdf\">",
+	);
+	assert_contains(&first_post, "<summary>archive.pdf</summary>");
 	assert_contains(&first_post, "href=archive.pdf");
 	assert_not_contains(&first_post, "model-viewer.min.js");
 	assert_not_contains(&first_post, "stl-viewer.js");
