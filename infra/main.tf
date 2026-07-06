@@ -604,6 +604,31 @@ resource "aws_cloudwatch_dashboard" "operations" {
           y      = 18
           type   = "metric"
           properties = {
+            title   = "Generation time per website"
+            region  = var.aws_region
+            view    = "timeSeries"
+            stacked = false
+            period  = 3600
+            yAxis = {
+              left = {
+                label = "Seconds"
+                min   = 0
+              }
+            }
+            metrics = [
+              [{ expression = "SEARCH('{${local.cloudwatch_namespace},Service,Site} MetricName=\"SiteGenerationSeconds\" Service=\"${var.project_name}\"', 'Minimum', 3600)", id = "gen_min", label = "Min" }],
+              [{ expression = "SEARCH('{${local.cloudwatch_namespace},Service,Site} MetricName=\"SiteGenerationSeconds\" Service=\"${var.project_name}\"', 'Average', 3600)", id = "gen_avg", label = "Average" }],
+              [{ expression = "SEARCH('{${local.cloudwatch_namespace},Service,Site} MetricName=\"SiteGenerationSeconds\" Service=\"${var.project_name}\"', 'Maximum', 3600)", id = "gen_max", label = "Max" }]
+            ]
+          }
+        },
+        {
+          height = 6
+          width  = 24
+          x      = 0
+          y      = 24
+          type   = "metric"
+          properties = {
             title   = "Errors"
             region  = var.aws_region
             view    = "timeSeries"

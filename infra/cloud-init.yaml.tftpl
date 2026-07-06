@@ -101,6 +101,11 @@ write_files:
           sync_errors='1'
         fi
         /opt/everpublich/bin/publish-everpublich-metrics "$notebooks" "$notes" "$built" "$failed" "$sync_errors" || true
+        grep -E '^SiteGenerationSeconds	' "$rebuild_log" | while IFS=$'\t' read -r metric site seconds; do
+          if [ "$metric" = 'SiteGenerationSeconds' ] && [ -n "$site" ] && [ -n "$seconds" ]; then
+            /opt/everpublich/bin/publish-site-generation-metric "$site" "$seconds" || true
+          fi
+        done
         if [ "$rebuild_status" -ne 0 ]; then
           exit "$rebuild_status"
         fi
@@ -140,6 +145,29 @@ write_files:
           "MetricName=SitesBuilt,Dimensions=[{Name=Service,Value=${project_name}}],Value=$built,Unit=Count" \
           "MetricName=BuildFailures,Dimensions=[{Name=Service,Value=${project_name}}],Value=$failed,Unit=Count" \
           "MetricName=SyncErrors,Dimensions=[{Name=Service,Value=${project_name}}],Value=$sync_errors,Unit=Count"
+  - path: /opt/everpublich/bin/publish-site-generation-metric
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      set -a
+      . /etc/everpublich/everpublich.env
+      set +a
+
+      site="$${1:?site slug is required}"
+      seconds="$${2:?generation seconds are required}"
+
+      if ! command -v aws >/dev/null; then
+        echo 'aws CLI is not installed; skipping site generation CloudWatch metric.' >&2
+        exit 0
+      fi
+
+      aws cloudwatch put-metric-data \
+        --namespace "$EVERPUBLICH_CLOUDWATCH_NAMESPACE" \
+        --metric-data \
+          "MetricName=SiteGenerationSeconds,Dimensions=[{Name=Service,Value=${project_name}},{Name=Site,Value=$site}],Value=$seconds,Unit=Seconds"
   - path: /opt/everpublich/bin/publish-sites-to-s3
     owner: root:root
     permissions: '0755'

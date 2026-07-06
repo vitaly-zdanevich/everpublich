@@ -10,6 +10,7 @@ use crate::models::{
 	BuildState, EvernoteAccessMode, IndexMode, Note, Post, PostKind, Resource, SearchMode,
 	SiteSettings, UserItem,
 };
+use crate::site_output::{BuiltSiteAnnotation, annotate_built_site, duration_milliseconds};
 use crate::slug::slugify;
 use crate::store::SqliteUserRow;
 use crate::zola::{GeneratedSite, write_zola_site};
@@ -22,6 +23,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
 use yrs::{
@@ -162,21 +164,33 @@ pub fn rebuild_all(options: &RebuildOptions) -> Result<RebuildSummary> {
 
 		upsert_user(&app_db, &site.user)?;
 		let build_id = start_build(&app_db, &site.user.user_id, site.notes.len())?;
-		match build_site(options, site) {
-			Ok((generated, posts)) => {
+		let generation_started = Instant::now();
+		match build_site(options, site, generation_started) {
+			Ok((generated, posts, annotation)) => {
 				replace_note_index(&app_db, &site.user.user_id, &posts)?;
 				finish_build(&app_db, build_id, "succeeded", None)?;
 				summary.sites_built += 1;
+				print_site_generation_metric(
+					&site.user.settings.subdomain,
+					annotation.generation_duration_milliseconds,
+				);
 				println!(
-					"Built {} at {} ({} posts, {} pages, {} podcast items)",
+					"Built {} at {} ({} posts, {} pages, {} podcast items, {} bytes raw, {} bytes Brotli, {:.2}% savings)",
 					site.user.settings.title,
 					site.user.settings.base_url,
 					generated.posts,
 					generated.pages,
-					generated.podcast_items
+					generated.podcast_items,
+					annotation.total_size_bytes,
+					annotation.brotli_size_bytes,
+					annotation.brotli_savings_percent
 				);
 			}
 			Err(error) => {
+				print_site_generation_metric(
+					&site.user.settings.subdomain,
+					duration_milliseconds(generation_started.elapsed()),
+				);
 				finish_build(&app_db, build_id, "failed", Some(&error.to_string()))?;
 				summary.sites_failed += 1;
 				eprintln!("Failed to build {}: {error:#}", site.user.settings.title);
@@ -185,6 +199,14 @@ pub fn rebuild_all(options: &RebuildOptions) -> Result<RebuildSummary> {
 	}
 
 	Ok(summary)
+}
+
+fn print_site_generation_metric(site_slug: &str, duration_milliseconds: u64) {
+	println!(
+		"SiteGenerationSeconds\t{}\t{:.3}",
+		site_slug,
+		duration_milliseconds as f64 / 1000.0
+	);
 }
 
 fn prune_generated_sites(sites_dir: &Path, allowed_slugs: &BTreeSet<String>) -> Result<()> {
@@ -1001,7 +1023,11 @@ fn path_contains_component(path: &Path, component: &str) -> bool {
 		.any(|part| part.as_os_str().to_string_lossy() == component)
 }
 
-fn build_site(options: &RebuildOptions, site: &CacheSite) -> Result<(GeneratedSite, Vec<Post>)> {
+fn build_site(
+	options: &RebuildOptions,
+	site: &CacheSite,
+	generation_started: Instant,
+) -> Result<(GeneratedSite, Vec<Post>, BuiltSiteAnnotation)> {
 	let site_dir = options.sites_dir.join(&site.user.settings.subdomain);
 	if site_dir.exists() {
 		fs::remove_dir_all(&site_dir)
@@ -1034,7 +1060,13 @@ fn build_site(options: &RebuildOptions, site: &CacheSite) -> Result<(GeneratedSi
 		);
 	}
 
-	Ok((generated, posts))
+	let annotation = annotate_built_site(
+		&site_dir.join("public"),
+		Utc::now(),
+		generation_started.elapsed(),
+	)?;
+
+	Ok((generated, posts, annotation))
 }
 
 fn copy_resource_files(site_dir: &Path, notes: &[CachedNote], posts: &[Post]) -> Result<()> {
@@ -2023,7 +2055,7 @@ mod tests {
 		assert_eq!(site.notes.len(), 1);
 		assert_eq!(site.notes[0].note.title, "Hello from cache");
 		assert_eq!(site.notes[0].note.tags, vec!["intro"]);
-		assert!(site.notes[0].note.enml.contains("Hello cached world"));
+		assert!(site.notes[0].note.enml.contains("Cached note body"));
 		assert_eq!(site.notes[0].files.len(), 1);
 	}
 
@@ -2049,7 +2081,13 @@ mod tests {
 				.join("public-notebook/public/posts/hello-from-cache/index.html"),
 		)
 		.unwrap();
-		assert!(html.contains("Hello cached world"));
+		assert!(html.contains("<!-- Everpublich build:"));
+		assert!(html.contains("\n  generated_at: "));
+		assert!(html.contains("\n  generation_time: "));
+		assert!(html.contains("\n  total_size: "));
+		assert!(html.contains("\n  brotli_size: "));
+		assert!(html.contains("\n  brotli_savings: "));
+		assert!(html.contains("Cached note body"));
 		assert!(html.contains("<audio controls"));
 		assert!(
 			fixture
@@ -2505,7 +2543,7 @@ mod tests {
 			fs::create_dir_all(&rte_dir).unwrap();
 			fs::write(
 				rte_dir.join("note-1.dat"),
-				b"fontWeight\0inherit\0y Hello cached world\0content\0en-note",
+				b"fontWeight\0inherit\0y Cached note body\0content\0en-note",
 			)
 			.unwrap();
 

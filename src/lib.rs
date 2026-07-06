@@ -15,6 +15,7 @@ pub mod evernote_api;
 pub mod evernote_cache;
 pub mod github;
 pub mod models;
+mod site_output;
 pub mod slug;
 pub mod store;
 pub mod widgets;

@@ -24,6 +24,8 @@ jobs:
           curl -fsSL "https://github.com/getzola/zola/releases/download/${ZOLA_VERSION}/zola-${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/zola.tar.gz
           sudo tar -xzf /tmp/zola.tar.gz -C /usr/local/bin zola
           zola --version
+      - name: Install Brotli
+        run: sudo apt-get update && sudo apt-get install -y brotli
       - name: Node toolchain
         uses: actions/setup-node@v6
         with:
