@@ -72,7 +72,10 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - Podcast XML feed from notes tagged `podcast`.
 - Tags: every Evernote tag gets a page.
 - Notes tagged `page` become dedicated website pages.
-- A note tagged `about` becomes the About page.
+- A note titled `everpublich:about` becomes the About page.
+- A note titled `everpublish:Something` becomes a dedicated page named `Something`.
+- A note titled `everpublich:#tag` adds a top navigation link to that tag; the note content becomes the link tooltip.
+- A note titled `everpublich:config` can set notebook options like `widgets: off` and can embed fenced `css` or `js` code blocks into the generated website.
 - If an About note references about.me, the intended behavior is to reuse text, image, and links from that profile and link back to it.
 - Images, audio, video, and attachments from Evernote notes are copied to the static site.
 - Audio and video are playable in the browser.
@@ -86,7 +89,7 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 
 ## Widget expansion
 
-If a note contains a bare supported URL, Everpublich can expand it into a widget. Current planned and partially implemented providers:
+If a note contains a bare supported URL, Everpublich can expand it into a widget. Current providers:
 
 - YouTube
 - Instagram
@@ -101,6 +104,9 @@ If a note contains a bare supported URL, Everpublich can expand it into a widget
 - Bilibili
 - Odysee
 - Yandex Music
+- Steam
+- VK playlists
+- Mastodon posts and static profile cards
 
 Good extra widget candidates:
 
@@ -112,7 +118,7 @@ Good extra widget candidates:
 - GitHub Gist and CodePen for code
 - Figma embeds for design files
 - Google Maps for places
-- Reddit, Mastodon, Bluesky, and Telegram public posts
+- Reddit, Bluesky, and Telegram public posts
 
 ## GitHub backup
 

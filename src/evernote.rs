@@ -7,12 +7,14 @@
 use crate::enml::enml_to_zola_body;
 use crate::models::{Note, Post, PostKind};
 use crate::slug::slug_from_title_and_tags;
-use crate::widgets::expand_bare_links;
+use crate::widgets::{enrich_link_titles, expand_bare_links};
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
+use html_escape::decode_html_entities;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use regex::Regex;
 use sha1::Sha1;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -141,7 +143,12 @@ fn encode(value: &str) -> String {
 
 /// Convert fetched Evernote notes to blog posts/pages.
 pub fn notes_to_posts(notes: &[Note], expand_widgets: bool) -> Vec<Post> {
-	let note_slug_by_guid = unique_note_slug_map(notes);
+	let config = notebook_config(notes, expand_widgets);
+	let linkable_notes = notes
+		.iter()
+		.filter(|note| post_kind(&note.title, &note.tags).is_linkable())
+		.collect::<Vec<_>>();
+	let note_slug_by_guid = unique_note_slug_map(&linkable_notes);
 
 	notes
 		.iter()
@@ -150,19 +157,48 @@ pub fn notes_to_posts(notes: &[Note], expand_widgets: bool) -> Vec<Post> {
 				.get(&note.guid.to_ascii_lowercase())
 				.cloned()
 				.unwrap_or_else(|| slug_from_title_and_tags(&note.title, &note.tags));
-			note_to_post_with_slug(note, slug, &note_slug_by_guid, expand_widgets)
+			note_to_post_with_slug(note, slug, &note_slug_by_guid, config.expand_widgets)
 		})
 		.collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotebookConfig {
+	expand_widgets: bool,
+}
+
+fn notebook_config(notes: &[Note], expand_widgets: bool) -> NotebookConfig {
+	let mut config = NotebookConfig { expand_widgets };
+	for note in notes.iter().filter(|note| is_config_note(&note.title)) {
+		apply_config_note(&mut config, &note.enml);
+	}
+	config
+}
+
+fn apply_config_note(config: &mut NotebookConfig, enml: &str) {
+	for line in plain_text_from_enml(enml).lines() {
+		let Some((key, value)) = line.split_once(':') else {
+			continue;
+		};
+		if key.trim().eq_ignore_ascii_case("widgets") {
+			let value = value.trim().to_ascii_lowercase();
+			if matches!(value.as_str(), "off" | "false" | "no" | "disabled") {
+				config.expand_widgets = false;
+			} else if matches!(value.as_str(), "on" | "true" | "yes" | "enabled") {
+				config.expand_widgets = true;
+			}
+		}
+	}
+}
+
 /// Build the final URL slug for each note GUID, making duplicate title or
 /// explicit `slug:` values unique before internal Evernote links are rewritten.
-fn unique_note_slug_map(notes: &[Note]) -> HashMap<String, String> {
+fn unique_note_slug_map(notes: &[&Note]) -> HashMap<String, String> {
 	let mut seen_bases = HashSet::<String>::new();
 	let mut used_slugs = HashSet::<String>::new();
 	let mut slugs = HashMap::new();
 	for note in notes {
-		let base = slug_from_title_and_tags(&note.title, &note.tags);
+		let base = note_base_slug(note);
 		let candidate = if seen_bases.insert(base.clone()) {
 			base.clone()
 		} else {
@@ -195,8 +231,22 @@ pub fn note_to_post(
 	note_slug_by_guid: &HashMap<String, String>,
 	expand_widgets: bool,
 ) -> Post {
-	let slug = slug_from_title_and_tags(&note.title, &note.tags);
+	let slug = note_base_slug(note);
 	note_to_post_with_slug(note, slug, note_slug_by_guid, expand_widgets)
+}
+
+fn note_base_slug(note: &Note) -> String {
+	if is_about_note(&note.title) {
+		"about".to_string()
+	} else if is_config_note(&note.title) {
+		"everpublich-config".to_string()
+	} else if let Some(tag) = everpublish_nav_tag(&note.title) {
+		slug_from_title_and_tags(&tag, &[])
+	} else if let Some(title) = everpublish_page_title(&note.title) {
+		slug_from_title_and_tags(&title, &note.tags)
+	} else {
+		slug_from_title_and_tags(&note.title, &note.tags)
+	}
 }
 
 fn note_to_post_with_slug(
@@ -205,37 +255,89 @@ fn note_to_post_with_slug(
 	note_slug_by_guid: &HashMap<String, String>,
 	expand_widgets: bool,
 ) -> Post {
-	let kind = post_kind(&note.tags);
+	let kind = post_kind(&note.title, &note.tags);
 	let body = enml_to_zola_body(&note.enml, &note.resources, note_slug_by_guid);
-	let body = expand_bare_links(&body, expand_widgets);
+	let body = if kind == PostKind::Config {
+		body
+	} else {
+		let body = expand_bare_links(&body, expand_widgets);
+		enrich_link_titles(&body)
+	};
 
 	Post {
 		guid: note.guid.clone(),
 		slug,
-		title: clean_title(&note.title),
+		title: post_title(&note.title, kind),
 		date: note.created,
-		tags: public_tags(&note.tags),
+		tags: if kind == PostKind::NavTag {
+			Vec::new()
+		} else {
+			public_tags(&note.tags)
+		},
 		body,
 		resources: note.resources.clone(),
 		kind,
 	}
 }
 
-fn post_kind(tags: &[String]) -> PostKind {
-	if has_tag(tags, "about") {
+fn post_kind(title: &str, tags: &[String]) -> PostKind {
+	if is_config_note(title) {
+		PostKind::Config
+	} else if is_about_note(title) {
 		PostKind::About
-	} else if has_tag(tags, "page") {
+	} else if everpublish_nav_tag(title).is_some() {
+		PostKind::NavTag
+	} else if everpublish_page_title(title).is_some() || has_tag(tags, "page") {
 		PostKind::Page
 	} else {
 		PostKind::BlogPost
 	}
 }
 
+fn is_about_note(title: &str) -> bool {
+	matches!(
+		everpublish_page_title(title).as_deref(),
+		Some(title) if title.eq_ignore_ascii_case("about")
+	)
+}
+
+fn is_config_note(title: &str) -> bool {
+	matches!(
+		everpublish_command_title(title).as_deref(),
+		Some(title) if title.eq_ignore_ascii_case("config")
+	)
+}
+
+fn everpublish_nav_tag(title: &str) -> Option<String> {
+	everpublish_command_title(title)
+		.and_then(|title| title.strip_prefix('#').map(str::trim).map(clean_title))
+		.filter(|tag| !tag.is_empty())
+}
+
+/// Return a dedicated page title from an Everpublich title command.
+fn everpublish_page_title(title: &str) -> Option<String> {
+	everpublish_command_title(title).filter(|title| !title.starts_with('#'))
+}
+
+fn everpublish_command_title(title: &str) -> Option<String> {
+	let trimmed = title.trim();
+	let lower = trimmed.to_ascii_lowercase();
+	for prefix in ["everpublish:", "everpublich:"] {
+		if lower.starts_with(prefix) {
+			return trimmed
+				.get(prefix.len()..)
+				.map(str::trim)
+				.filter(|title| !title.is_empty())
+				.map(clean_title);
+		}
+	}
+	None
+}
+
 fn public_tags(tags: &[String]) -> Vec<String> {
 	tags.iter()
 		.filter(|tag| {
-			!tag.starts_with("slug:")
-				&& !matches!(tag.as_str(), "page" | "about" | "podcast_description")
+			!tag.starts_with("slug:") && !matches!(tag.as_str(), "page" | "podcast_description")
 		})
 		.cloned()
 		.collect()
@@ -247,6 +349,41 @@ fn has_tag(tags: &[String], wanted: &str) -> bool {
 
 fn clean_title(title: &str) -> String {
 	title.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn post_title(title: &str, kind: PostKind) -> String {
+	if kind == PostKind::NavTag
+		&& let Some(tag) = everpublish_nav_tag(title)
+	{
+		return format!("#{tag}");
+	}
+	everpublish_page_title(title)
+		.map(|title| {
+			if kind == PostKind::About {
+				"About".to_string()
+			} else {
+				title
+			}
+		})
+		.unwrap_or_else(|| clean_title(title))
+}
+
+fn plain_text_from_enml(enml: &str) -> String {
+	let body = enml_to_zola_body(enml, &[], &HashMap::new());
+	let with_line_breaks = Regex::new(
+		r"(?i)</?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>",
+	)
+	.unwrap()
+	.replace_all(&body, "\n");
+	let without_tags = Regex::new(r"(?s)<[^>]+>")
+		.unwrap()
+		.replace_all(&with_line_breaks, " ");
+	decode_html_entities(&without_tags)
+		.lines()
+		.map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n")
 }
 
 /// Helper for mock fixtures and tests.
@@ -276,6 +413,82 @@ mod tests {
 		assert_eq!(post.slug, "my-post");
 		assert_eq!(post.kind, PostKind::Page);
 		assert_eq!(post.tags, vec!["rust"]);
+	}
+
+	#[test]
+	fn maps_title_commands_to_about_page_pages_and_nav_tags() {
+		let notes = vec![
+			Note {
+				guid: "about".into(),
+				title: "everpublich:about".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec![],
+				enml: "<en-note>About body</en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "page".into(),
+				title: "everpublish:Project status".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec![],
+				enml: "<en-note>Page body</en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "nav".into(),
+				title: "everpublich:#postgres".into(),
+				created: utc(1_700_000_002),
+				updated: utc(1_700_000_002),
+				tags: vec![],
+				enml: "<en-note>PostgreSQL docs</en-note>".into(),
+				resources: vec![],
+			},
+		];
+
+		let posts = notes_to_posts(&notes, true);
+
+		assert_eq!(posts[0].kind, PostKind::About);
+		assert_eq!(posts[0].title, "About");
+		assert_eq!(posts[0].slug, "about");
+		assert_eq!(posts[1].kind, PostKind::Page);
+		assert_eq!(posts[1].title, "Project status");
+		assert_eq!(posts[1].slug, "project-status");
+		assert_eq!(posts[2].kind, PostKind::NavTag);
+		assert_eq!(posts[2].title, "#postgres");
+		assert!(posts[2].tags.is_empty());
+	}
+
+	#[test]
+	fn config_note_can_disable_widgets() {
+		let notes = vec![
+			Note {
+				guid: "config".into(),
+				title: "everpublich:config".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec![],
+				enml: "<en-note><p>widgets: off</p></en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "post".into(),
+				title: "Post".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec![],
+				enml: "<en-note><p>https://youtu.be/dQw4w9WgXcQ</p></en-note>".into(),
+				resources: vec![],
+			},
+		];
+
+		let posts = notes_to_posts(&notes, true);
+
+		assert_eq!(posts[0].kind, PostKind::Config);
+		assert_eq!(posts[1].kind, PostKind::BlogPost);
+		assert!(posts[1].body.contains("https://youtu.be/dQw4w9WgXcQ"));
+		assert!(!posts[1].body.contains("youtube("));
 	}
 
 	#[test]

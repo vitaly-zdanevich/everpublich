@@ -235,10 +235,10 @@ fn mock_notes() -> Vec<Note> {
         },
         Note {
             guid: "33333333-3333-3333-3333-333333333333".into(),
-            title: "About".into(),
+            title: "everpublich:about".into(),
             created: utc(1_700_172_800),
             updated: utc(1_700_172_800),
-            tags: vec!["about".into()],
+            tags: vec![],
             enml: r#"<en-note><p>I use Evernote from 2009 and love it.</p></en-note>"#.into(),
             resources: vec![],
         },

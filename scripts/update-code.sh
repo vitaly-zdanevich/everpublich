@@ -25,6 +25,7 @@ sudo -H -u everpublich bash -lc '
 	if [ -f /var/lib/everpublich/.cargo/env ]; then
 		. /var/lib/everpublich/.cargo/env
 	fi
+	export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 	cargo build --release --bin everpublich-cli
 '
 

@@ -44,6 +44,21 @@ pub struct GeneratedSite {
 	pub podcast_items: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NotebookSiteConfig {
+	nav_tags: Vec<NavTagLink>,
+	inline_css: String,
+	inline_js: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NavTagLink {
+	name: String,
+	label: String,
+	slug: String,
+	title: String,
+}
+
 /// Write a complete Zola source tree. The caller should run `zola build` and
 /// sync `public/` to the configured static hosting target.
 pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<GeneratedSite> {
@@ -54,18 +69,24 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 	fs::create_dir_all(root.join("templates/tags"))?;
 	fs::create_dir_all(root.join("static"))?;
 
+	let notebook_config = notebook_site_config(posts);
 	let has_about_page = posts.iter().any(|post| post.kind == PostKind::About);
 	let has_tags_page = posts.iter().any(|post| !post.tags.is_empty());
 	write_file(
 		&root.join("config.toml"),
-		&config_toml(&user.settings, has_about_page, has_tags_page),
+		&config_toml(
+			&user.settings,
+			has_about_page,
+			has_tags_page,
+			&notebook_config,
+		),
 	)?;
 	write_file(
 		&root.join("content/_index.md"),
 		&root_index_md(&user.settings),
 	)?;
 	write_file(&root.join("content/posts/_index.md"), POSTS_INDEX_MD)?;
-	write_templates(root)?;
+	write_templates(root, &notebook_config)?;
 	write_file(&root.join("static/style.css"), STYLE_CSS)?;
 	write_file(&root.join("static/search.js"), SEARCH_JS)?;
 	write_search_metadata(root, &user.settings, posts)?;
@@ -96,6 +117,7 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 				write_page(root, post)?;
 				page_count += 1;
 			}
+			PostKind::NavTag | PostKind::Config => {}
 		}
 	}
 
@@ -122,7 +144,12 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
 	fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn config_toml(settings: &SiteSettings, has_about_page: bool, has_tags_page: bool) -> String {
+fn config_toml(
+	settings: &SiteSettings,
+	has_about_page: bool,
+	has_tags_page: bool,
+	notebook_config: &NotebookSiteConfig,
+) -> String {
 	let feeds = "generate_feeds = true\nfeed_filenames = [\"rss.xml\"]\n";
 	let theme = settings
 		.zola_theme
@@ -164,6 +191,7 @@ expand_widgets = {expand_widgets}
 has_custom_css = {has_custom_css}
 has_about_page = {has_about_page}
 has_tags_page = {has_tags_page}
+nav_tags = {nav_tags}
 google_analytics_id = {google_analytics}
 yandex_metrica_id = {yandex_metrica}
 "#,
@@ -181,6 +209,7 @@ yandex_metrica_id = {yandex_metrica}
 		has_custom_css = has_custom_css,
 		has_about_page = has_about_page,
 		has_tags_page = has_tags_page,
+		nav_tags = nav_tags_toml(&notebook_config.nav_tags),
 		google_analytics = option_toml(settings.google_analytics_id.as_deref()),
 		yandex_metrica = option_toml(settings.yandex_metrica_id.as_deref()),
 	)
@@ -533,6 +562,7 @@ fn write_search_metadata(root: &Path, settings: &SiteSettings, posts: &[Post]) -
 			PostKind::BlogPost => format!("posts/{}/", post.slug),
 			PostKind::Page => format!("{}/", post.slug),
 			PostKind::About => "about/".to_string(),
+			PostKind::NavTag | PostKind::Config => continue,
 		};
 		metadata.insert(
 			site_url(&settings.base_url, &path),
@@ -609,8 +639,12 @@ fn podcast_item_xml(settings: &SiteSettings, post: &Post, audio: &Resource) -> S
 <guid isPermaLink=\"true\">{}</guid>\
 <pubDate>{}</pubDate>\
 <description>{}</description>\
+<itunes:title>{}</itunes:title>\
+<itunes:author>{}</itunes:author>\
+<itunes:subtitle>{}</itunes:subtitle>\
 <itunes:summary>{}</itunes:summary>\
-<itunes:episodeType>full</itunes:episodeType>\
+<itunes:explicit>false</itunes:explicit>\
+{}<itunes:episodeType>full</itunes:episodeType>\
 <enclosure url=\"{}\" type=\"{}\" length=\"0\"/>\
 </item>\n",
 		encode_text(&post.title),
@@ -618,10 +652,35 @@ fn podcast_item_xml(settings: &SiteSettings, post: &Post, audio: &Resource) -> S
 		encode_text(&post_url),
 		post.date.to_rfc2822(),
 		encode_text(&description),
+		encode_text(&post.title),
+		encode_text(&settings.title),
+		encode_text(&podcast_subtitle(&description)),
 		encode_text(&description),
+		podcast_keywords_xml(post),
 		encode_double_quoted_attribute(&audio_url),
 		encode_double_quoted_attribute(&audio.mime),
 	)
+}
+
+fn podcast_subtitle(description: &str) -> String {
+	truncate_chars(description, 255)
+}
+
+fn podcast_keywords_xml(post: &Post) -> String {
+	let keywords = post
+		.tags
+		.iter()
+		.filter(|tag| !tag.eq_ignore_ascii_case("podcast"))
+		.map(String::as_str)
+		.collect::<Vec<_>>();
+	if keywords.is_empty() {
+		String::new()
+	} else {
+		format!(
+			"<itunes:keywords>{}</itunes:keywords>",
+			encode_text(&keywords.join(", "))
+		)
+	}
 }
 
 fn podcast_description(post: &Post) -> String {
@@ -776,7 +835,11 @@ struct ItemValidation {
 	guid: bool,
 	pub_date: bool,
 	description: bool,
+	itunes_title: bool,
+	itunes_author: bool,
+	itunes_subtitle: bool,
 	itunes_summary: bool,
+	itunes_explicit: bool,
 	itunes_episode_type: bool,
 	enclosures: usize,
 	audio_enclosure: bool,
@@ -790,7 +853,11 @@ impl ItemValidation {
 			b"guid" => self.guid = true,
 			b"pubDate" => self.pub_date = true,
 			b"description" => self.description = true,
+			b"itunes:title" => self.itunes_title = true,
+			b"itunes:author" => self.itunes_author = true,
+			b"itunes:subtitle" => self.itunes_subtitle = true,
 			b"itunes:summary" => self.itunes_summary = true,
+			b"itunes:explicit" => self.itunes_explicit = true,
 			b"itunes:episodeType" => self.itunes_episode_type = true,
 			_ => {}
 		}
@@ -802,14 +869,18 @@ impl ItemValidation {
 			&& self.guid
 			&& self.pub_date
 			&& self.description
+			&& self.itunes_title
+			&& self.itunes_author
+			&& self.itunes_subtitle
 			&& self.itunes_summary
+			&& self.itunes_explicit
 			&& self.itunes_episode_type
 			&& self.enclosures == 1
 			&& self.audio_enclosure
 	}
 }
 
-fn write_templates(root: &Path) -> Result<()> {
+fn write_templates(root: &Path, notebook_config: &NotebookSiteConfig) -> Result<()> {
 	for (path, body) in [
 		("templates/base.html", BASE_HTML),
 		("templates/index.html", INDEX_HTML),
@@ -824,6 +895,7 @@ fn write_templates(root: &Path) -> Result<()> {
 		("templates/shortcodes/youtube.html", YOUTUBE_SHORTCODE),
 		("templates/shortcodes/vimeo.html", VIMEO_SHORTCODE),
 		("templates/shortcodes/spotify.html", SPOTIFY_SHORTCODE),
+		("templates/shortcodes/soundcloud.html", SOUNDCLOUD_SHORTCODE),
 		("templates/shortcodes/genius.html", GENIUS_SHORTCODE),
 		(
 			"templates/shortcodes/apple_podcast.html",
@@ -835,10 +907,63 @@ fn write_templates(root: &Path) -> Result<()> {
 		),
 		("templates/shortcodes/instagram.html", INSTAGRAM_SHORTCODE),
 		("templates/shortcodes/pinterest.html", PINTEREST_SHORTCODE),
+		("templates/shortcodes/rumble.html", RUMBLE_SHORTCODE),
+		("templates/shortcodes/odysee.html", ODYSEE_SHORTCODE),
+		("templates/shortcodes/bilibili.html", BILIBILI_SHORTCODE),
+		("templates/shortcodes/tiktok.html", TIKTOK_SHORTCODE),
+		("templates/shortcodes/steam.html", STEAM_SHORTCODE),
+		(
+			"templates/shortcodes/vk_playlist.html",
+			VK_PLAYLIST_SHORTCODE,
+		),
 	] {
 		write_file(&root.join(path), body)?;
 	}
+	write_file(
+		&root.join("templates/notebook_config_head.html"),
+		&notebook_config_head_template(notebook_config),
+	)?;
+	write_file(
+		&root.join("templates/notebook_config_body.html"),
+		&notebook_config_body_template(notebook_config),
+	)?;
 	Ok(())
+}
+
+fn notebook_config_head_template(notebook_config: &NotebookSiteConfig) -> String {
+	if notebook_config.inline_css.trim().is_empty() {
+		String::new()
+	} else {
+		format!(
+			"<style>\n{}\n</style>\n",
+			escape_inline_style(&notebook_config.inline_css)
+		)
+	}
+}
+
+fn notebook_config_body_template(notebook_config: &NotebookSiteConfig) -> String {
+	if notebook_config.inline_js.trim().is_empty() {
+		String::new()
+	} else {
+		format!(
+			"<script>\n{}\n</script>\n",
+			escape_inline_script(&notebook_config.inline_js)
+		)
+	}
+}
+
+fn escape_inline_style(css: &str) -> String {
+	Regex::new("(?i)</style")
+		.unwrap()
+		.replace_all(css, "<\\/style")
+		.into_owned()
+}
+
+fn escape_inline_script(js: &str) -> String {
+	Regex::new("(?i)</script")
+		.unwrap()
+		.replace_all(js, "<\\/script")
+		.into_owned()
 }
 
 fn toml_escape(s: &str) -> String {
@@ -861,13 +986,133 @@ fn option_toml(s: Option<&str>) -> String {
 		.unwrap_or_else(|| "false".to_string())
 }
 
+fn nav_tags_toml(tags: &[NavTagLink]) -> String {
+	if tags.is_empty() {
+		return "[]".to_string();
+	}
+	let items = tags
+		.iter()
+		.map(|tag| {
+			format!(
+				"{{ name = \"{}\", label = \"{}\", slug = \"{}\", title = \"{}\" }}",
+				toml_escape(&tag.name),
+				toml_escape(&tag.label),
+				toml_escape(&tag.slug),
+				toml_escape(&tag.title)
+			)
+		})
+		.collect::<Vec<_>>()
+		.join(", ");
+	format!("[{items}]")
+}
+
+fn notebook_site_config(posts: &[Post]) -> NotebookSiteConfig {
+	let mut config = NotebookSiteConfig::default();
+	for post in posts {
+		match post.kind {
+			PostKind::NavTag => {
+				if let Some(tag) = post.title.trim().strip_prefix('#') {
+					let name = tag.trim();
+					if !name.is_empty() {
+						config.nav_tags.push(NavTagLink {
+							name: name.to_string(),
+							label: format!("#{name}"),
+							slug: slugify(name),
+							title: post_plain_text(&post.body),
+						});
+					}
+				}
+			}
+			PostKind::Config => {
+				for block in config_code_blocks(&post.body) {
+					match block.language.as_str() {
+						"css" => push_snippet(&mut config.inline_css, &block.body),
+						"js" | "javascript" => push_snippet(&mut config.inline_js, &block.body),
+						_ => {}
+					}
+				}
+			}
+			PostKind::BlogPost | PostKind::Page | PostKind::About => {}
+		}
+	}
+	config
+}
+
+fn push_snippet(out: &mut String, snippet: &str) {
+	let snippet = snippet.trim();
+	if snippet.is_empty() {
+		return;
+	}
+	if !out.is_empty() {
+		out.push_str("\n\n");
+	}
+	out.push_str(snippet);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigCodeBlock {
+	language: String,
+	body: String,
+}
+
+fn config_code_blocks(body: &str) -> Vec<ConfigCodeBlock> {
+	let mut blocks = markdown_config_code_blocks(body);
+	blocks.extend(html_config_code_blocks(body));
+	blocks
+}
+
+fn markdown_config_code_blocks(body: &str) -> Vec<ConfigCodeBlock> {
+	Regex::new(r"(?ms)(?:^|\n)```([A-Za-z0-9_-]+)\s*\n(.*?)\n```")
+		.unwrap()
+		.captures_iter(body)
+		.filter_map(|caps| {
+			Some(ConfigCodeBlock {
+				language: caps.get(1)?.as_str().to_ascii_lowercase(),
+				body: caps.get(2)?.as_str().to_string(),
+			})
+		})
+		.collect()
+}
+
+fn html_config_code_blocks(body: &str) -> Vec<ConfigCodeBlock> {
+	Regex::new(r#"(?is)<pre[^>]*>\s*<code([^>]*)>(.*?)</code>\s*</pre>"#)
+		.unwrap()
+		.captures_iter(body)
+		.filter_map(|caps| {
+			let language = html_code_language(caps.get(1).map(|m| m.as_str()).unwrap_or(""))?;
+			Some(ConfigCodeBlock {
+				language,
+				body: decode_html_entities(caps.get(2)?.as_str()).to_string(),
+			})
+		})
+		.collect()
+}
+
+fn html_code_language(attrs: &str) -> Option<String> {
+	let class = Regex::new(r#"(?is)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
+		.unwrap()
+		.captures(attrs)
+		.and_then(|caps| caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3)))
+		.map(|value| value.as_str().to_ascii_lowercase());
+	let lang = class.as_deref().and_then(|class| {
+		class.split_whitespace().find_map(|item| {
+			item.strip_prefix("language-")
+				.or_else(|| item.strip_prefix("lang-"))
+		})
+	});
+	lang.or_else(|| {
+		Regex::new(r#"(?is)\bdata-language\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
+			.unwrap()
+			.captures(attrs)
+			.and_then(|caps| caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3)))
+			.map(|value| value.as_str())
+	})
+	.map(|language| language.to_ascii_lowercase())
+}
+
 fn post_nav_title(post: &Post) -> String {
 	let body = post_plain_text(&post.body);
-	if body.is_empty() {
-		truncate_chars(post.title.trim(), 1000)
-	} else {
-		truncate_chars(&format!("{}\n{body}", post.title.trim()), 1000)
-	}
+	truncate_chars(&body, 1000)
 }
 
 fn post_plain_text(body: &str) -> String {
@@ -919,6 +1164,7 @@ const BASE_HTML: &str = r#"<!doctype html>
   <link rel="alternate" type="application/rss+xml" title="{{ config.title }}" href="{{ get_url(path='rss.xml', trailing_slash=false) | safe }}">
   <link rel="alternate" type="application/rss+xml" title="{{ config.title }} podcast" href="{{ get_url(path='podcast.xml', trailing_slash=false) | safe }}">
   <link rel="stylesheet" href="{{ get_url(path='style.css', cachebust=true) }}">
+  {% include "notebook_config_head.html" %}
   {% if config.extra.google_analytics_id %}<script async src="https://www.googletagmanager.com/gtag/js?id={{ config.extra.google_analytics_id }}"></script><script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','{{ config.extra.google_analytics_id }}');</script>{% endif %}
   {% if config.extra.yandex_metrica_id %}<script>window.ym=window.ym||function(){(window.ym.a=window.ym.a||[]).push(arguments)};window.ym.l=1*new Date();</script><script async src="https://mc.yandex.ru/metrika/tag.js"></script><script>ym({{ config.extra.yandex_metrica_id }},'init',{clickmap:true,trackLinks:true,accurateTrackBounce:true});</script>{% endif %}
 </head>
@@ -933,6 +1179,9 @@ const BASE_HTML: &str = r#"<!doctype html>
       {% if config.extra.has_about_page %}
       <a href="{{ get_url(path='/about/') }}">About</a>
       {% endif %}
+      {% for nav_tag in config.extra.nav_tags %}
+      <a href="{{ get_url(path='/tags/' ~ nav_tag.slug ~ '/') | safe }}" title="{{ nav_tag.title }}">#{{ nav_tag.name }}</a>
+      {% endfor %}
     </nav>
   {% if config.extra.search_google %}
     <form action="https://www.google.com/search" class="search" method="get"><input name="q" type="search" placeholder="Search"><input name="sitesearch" type="hidden" value="{{ config.base_url }}"></form>
@@ -943,6 +1192,7 @@ const BASE_HTML: &str = r#"<!doctype html>
   <main>{% block content %}{% endblock content %}</main>
   {% if config.extra.search_static %}<script src="{{ get_url(path='search_index.en.js') | safe }}"></script><script src="{{ get_url(path='search_metadata.js', cachebust=true) | safe }}"></script><script src="{{ get_url(path='search.js') | safe }}"></script>{% endif %}
   {% if config.extra.has_custom_css %}<link rel="stylesheet" href="{{ get_url(path='custom.css', cachebust=true) }}">{% endif %}
+  {% include "notebook_config_body.html" %}
 </body>
 </html>
 "#;
@@ -992,8 +1242,8 @@ const POST_HTML: &str = r#"{% extends "base.html" %}
 </article>
 {% if page.higher or page.lower %}
 <nav class='post-nav' aria-label='Post navigation'>
-  {% if page.higher %}<a class='post-nav__link post-nav__link--prev' href='{{ page.higher.permalink | safe }}' title='{{ page.higher.extra.nav_title }}'><span>Newer</span><strong>{{ page.higher.title }}</strong></a>{% endif %}
-  {% if page.lower %}<a class='post-nav__link post-nav__link--next' href='{{ page.lower.permalink | safe }}' title='{{ page.lower.extra.nav_title }}'><span>Older</span><strong>{{ page.lower.title }}</strong></a>{% endif %}
+  {% if page.higher %}<a class='post-nav__link post-nav__link--prev' href='{{ page.higher.permalink | safe }}' title='{{ page.higher.extra.nav_title }}' accesskey='n' aria-keyshortcuts='Alt+Shift+N' rel='prev'><span>Newer</span><strong>{{ page.higher.title }}</strong></a>{% endif %}
+  {% if page.lower %}<a class='post-nav__link post-nav__link--next' href='{{ page.lower.permalink | safe }}' title='{{ page.lower.extra.nav_title }}' accesskey='o' aria-keyshortcuts='Alt+Shift+O' rel='next'><span>Older</span><strong>{{ page.lower.title }}</strong></a>{% endif %}
 </nav>
 {% endif %}
 {% endblock content %}
@@ -1026,11 +1276,18 @@ const VIDEO_SHORTCODE: &str =
 const YOUTUBE_SHORTCODE: &str = r#"<div class="embed embed-youtube"><iframe src="https://www.youtube.com/embed/{{ id }}" title="YouTube video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>"#;
 const VIMEO_SHORTCODE: &str = r#"<div class="embed embed-vimeo"><iframe src="https://player.vimeo.com/video/{{ id }}" title="Vimeo video" loading="lazy" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></div>"#;
 const SPOTIFY_SHORTCODE: &str = r#"<div class="embed embed-spotify"><iframe src="{{ url }}" loading="lazy" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe><a href="{{ url }}">Open in Spotify</a></div>"#;
+const SOUNDCLOUD_SHORTCODE: &str = r#"<div class="embed embed-soundcloud"><iframe src="{{ url }}" title="SoundCloud player" loading="lazy" allow="autoplay; encrypted-media"></iframe></div>"#;
 const APPLE_PODCAST_SHORTCODE: &str = r#"<div class="embed embed-apple"><iframe src="{{ url }}" loading="lazy" allow="autoplay *; encrypted-media *;"></iframe><a href="{{ url }}">Listen on Apple Podcasts</a></div>"#;
 const YANDEX_MUSIC_SHORTCODE: &str = r#"<div class="embed embed-yandex"><iframe src="{{ url }}" loading="lazy"></iframe><a href="{{ url }}">Open in Yandex Music</a></div>"#;
 const INSTAGRAM_SHORTCODE: &str = r#"<blockquote class="instagram-media" data-instgrm-permalink="{{ url }}" data-instgrm-version="14"><a href="{{ url }}">View on Instagram</a></blockquote><script async src="//www.instagram.com/embed.js"></script>"#;
 const PINTEREST_SHORTCODE: &str = r#"<a data-pin-do="embedPin" data-pin-width="large" href="{{ url }}">View on Pinterest</a><script async defer src="//assets.pinterest.com/js/pinit.js"></script>"#;
 const GENIUS_SHORTCODE: &str = r#"<div class='embed embed-genius'><div id='rg_embed_link_{{ song_id }}' class='rg_embed_link' data-song-id='{{ song_id }}'><a href='{{ url }}'>Lyrics on Genius</a></div><script crossorigin src='//genius.com/songs/{{ song_id }}/embed.js'></script></div>"#;
+const RUMBLE_SHORTCODE: &str = r#"<div class="embed embed-rumble"><iframe src="https://rumble.com/embed/{{ id }}/" title="Rumble video" loading="lazy" allowfullscreen></iframe></div>"#;
+const ODYSEE_SHORTCODE: &str = r#"<div class="embed embed-odysee"><iframe src="{{ url }}" title="Odysee video" loading="lazy" allowfullscreen></iframe></div>"#;
+const BILIBILI_SHORTCODE: &str = r#"<div class="embed embed-bilibili"><iframe src="{{ url }}" title="Bilibili video" loading="lazy" allowfullscreen></iframe></div>"#;
+const TIKTOK_SHORTCODE: &str = r#"<div class="embed embed-tiktok"><iframe src="https://www.tiktok.com/embed/v2/{{ id }}" title="TikTok video" loading="lazy" allow="encrypted-media" allowfullscreen></iframe><a href="{{ url }}">View on TikTok</a></div>"#;
+const STEAM_SHORTCODE: &str = r#"<div class="embed embed-steam"><iframe src="https://store.steampowered.com/widget/{{ app_id }}/" title="Steam app" loading="lazy"></iframe></div>"#;
+const VK_PLAYLIST_SHORTCODE: &str = r#"<div class="embed embed-vk-playlist"><iframe src="https://vk.com/widget_playlist.php?oid={{ oid }}&pid={{ pid }}" title="VK playlist" loading="lazy" allow="autoplay; encrypted-media"></iframe></div>"#;
 
 const SEARCH_JS: &str = include_str!("../assets/zola/search.min.js");
 const STYLE_CSS: &str = include_str!("../assets/zola/style.min.css");
@@ -1094,6 +1351,14 @@ mod tests {
 		assert!(
 			podcast.contains("<description>Episode intro with &amp; escaped text.</description>")
 		);
+		assert!(podcast.contains("<itunes:title>Episode</itunes:title>"));
+		assert!(podcast.contains("<itunes:author>My Site</itunes:author>"));
+		assert!(
+			podcast.contains(
+				"<itunes:subtitle>Episode intro with &amp; escaped text.</itunes:subtitle>"
+			)
+		);
+		assert!(podcast.contains("<itunes:explicit>false</itunes:explicit>"));
 		assert!(podcast.contains(
 			"enclosure url=\"https://my-site.everpublich.example/posts/episode/episode%20one.mp3\" type=\"audio/mpeg\" length=\"0\""
 		));
@@ -1120,6 +1385,19 @@ mod tests {
 		assert_eq!(calendar_day_class(3), "calendar-day calendar-day--many");
 		assert_eq!(post_count_label(1), "1 post");
 		assert_eq!(post_count_label(3), "3 posts");
+	}
+
+	#[test]
+	fn reads_config_code_blocks_from_markdown_fences() {
+		let blocks = config_code_blocks(
+			"widgets: off\n\n```css\nbody { color: red; }\n```\n\n```js\nwindow.ok = true;\n```",
+		);
+
+		assert_eq!(blocks.len(), 2);
+		assert_eq!(blocks[0].language, "css");
+		assert!(blocks[0].body.contains("color: red"));
+		assert_eq!(blocks[1].language, "js");
+		assert!(blocks[1].body.contains("window.ok"));
 	}
 
 	#[test]

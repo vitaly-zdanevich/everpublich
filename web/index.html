@@ -4,7 +4,7 @@
 	<meta charset='utf-8'>
 	<meta name='viewport' content='width=device-width, initial-scale=1'>
 	<title>Everpublich: Evernote notebook to a static website</title>
-	<meta name='description' content='Sync an Evernote notebook to a static Zola blog or website.'>
+	<meta name='description' content='Sync read-only notebook to a static Zola blog.'>
 	<link rel='icon' href='favicon.svg' type='image/svg+xml'>
 	<link rel='stylesheet' href='app.css'>
 </head>
@@ -33,6 +33,7 @@
 				<li>Images, audio, video, and attachments copied from Evernote and served from S3 through CloudFront</li>
 				<li>AWS CloudFront Content Delivery Network for fast page loads</li>
 				<li>RSS, sitemap.xml, tag pages from note-content <code>#tags</code>, About page, calendar, and podcast.xml for notes with <code>#podcast</code></li>
+				<li>Title commands: <code>everpublich:about</code> for About, <code>everpublish:Page</code> for pages, <code>everpublich:#tag</code> for nav links, and <code>everpublich:config</code> for options such as <code>widgets: off</code> plus CSS/JS code blocks</li>
 				<li>SEO-friendly output with minimal JavaScript, used only for static search</li>
 				<li>Internal Evernote links inside the shared notebook become relative website links</li>
 				<li>Optional GitHub backup repository with public/private visibility</li>

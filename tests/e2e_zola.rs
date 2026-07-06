@@ -58,6 +58,7 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "list-style:none");
 	assert_contains(&style, "#search-results li:hover");
 	assert_contains(&style, ".post-nav");
+	assert_contains(&style, "width:99vw");
 	assert_contains(&style, "min-height:100vh");
 	assert_contains(
 		&style,
@@ -66,6 +67,40 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, "margin:auto 0 0;padding-top:36px");
 	assert_contains(&style, "::selection");
 	assert_contains(&style, "background-color:#292");
+	assert_contains(&style, "--quote-bg:#eef4eb");
+	assert_contains(&style, "--quote-bg:#0b1510");
+	assert_contains(&style, ".broken-link{color:#b00020}");
+	assert_contains(&style, ".broken-link{color:#ff6b7a}");
+	assert_contains(
+		&style,
+		".embed-youtube,.embed-vimeo,.embed-rumble,.embed-odysee,.embed-bilibili,.embed-tiktok{aspect-ratio:16/9}",
+	);
+	assert_contains(&style, ".embed-soundcloud iframe{height:400px}");
+	assert_contains(&style, ".embed-vk-playlist iframe{height:450px}");
+	assert_contains(&style, ".embed-mastodon-post iframe{height:520px}");
+	assert_contains(&style, ".mastodon-profile-card{");
+	assert_contains(&style, "display:flex");
+	assert_contains(
+		&style,
+		".mastodon-profile-card__avatar img{object-fit:cover",
+	);
+	assert_contains(
+		&style,
+		"span[style*=--en-highlight]{color:#151515!important}",
+	);
+	assert_contains(
+		&style,
+		"blockquote:not(.instagram-media){border-left:4px solid var(--accent);background:var(--quote-bg)",
+	);
+	assert_contains(
+		&style,
+		".embed-genius{color:var(--fg);background:#080808;border-radius:4px;padding:.75rem;overflow:hidden}",
+	);
+	assert_contains(
+		&style,
+		".embed-genius,.embed-genius *{color:var(--fg)!important}",
+	);
+	assert_contains(&style, ".embed-genius a{color:var(--link)!important}");
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");
 	assert_contains(
@@ -77,13 +112,20 @@ fn zola_build_renders_public_html() {
 	assert_contains(&first_post, "src=photo.jpg");
 	assert_contains(&first_post, "href=archive.pdf");
 	assert_contains(&first_post, "post-nav");
+	assert_contains(&first_post, "accesskey=o");
+	assert_contains(&first_post, "aria-keyshortcuts=Alt+Shift+O");
 	assert_contains(
 		&first_post,
-		"Linked Note\nLinked from another note.\nSecond tooltip line.\nQuoted tooltip line\nMore quote.",
+		"Linked from another note.\nSecond tooltip line.\nQuoted tooltip line\nMore quote.",
 	);
+	assert_not_contains(&first_post, "Linked Note\nLinked from another note.");
 	let linked_post = read(&public, "posts/linked-note/index.html");
 	assert_contains(&linked_post, ">Newer<");
 	assert_contains(&linked_post, ">Older<");
+	assert_contains(&linked_post, "accesskey=n");
+	assert_contains(&linked_post, "aria-keyshortcuts=Alt+Shift+N");
+	assert_contains(&linked_post, "accesskey=o");
+	assert_contains(&linked_post, "aria-keyshortcuts=Alt+Shift+O");
 	assert_not_contains(&linked_post, ">Previous<");
 	assert_not_contains(&linked_post, ">Next<");
 
@@ -155,6 +197,12 @@ fn zola_build_renders_public_html() {
 		&podcast,
 		"<description>Audio and video stay playable.</description>",
 	);
+	assert_contains(&podcast, "<itunes:title>Media note</itunes:title>");
+	assert_contains(
+		&podcast,
+		"<itunes:subtitle>Audio and video stay playable.</itunes:subtitle>",
+	);
+	assert_contains(&podcast, "<itunes:keywords>media</itunes:keywords>");
 	assert_contains(
 		&podcast,
 		"enclosure url=\"https://my-notebook.everpublich.example/posts/media-note/episode.mp3\" type=\"audio/mpeg\" length=\"0\"",
@@ -167,7 +215,7 @@ fn zola_build_omits_about_link_without_about_page() {
 	let user = user_fixture();
 	let notes = note_fixtures()
 		.into_iter()
-		.filter(|note| !note.tags.iter().any(|tag| tag == "about"))
+		.filter(|note| !note.title.eq_ignore_ascii_case("everpublich:about"))
 		.collect::<Vec<_>>();
 	let posts = notes_to_posts(&notes, true);
 
@@ -198,13 +246,14 @@ fn zola_build_omits_tags_link_without_public_tags() {
 	let dir = tempfile::tempdir().unwrap();
 	let user = user_fixture();
 	let mut notes = note_fixtures();
+	notes.retain(|note| !note.title.eq_ignore_ascii_case("everpublich:about"));
 	for note in &mut notes {
 		note.tags.clear();
 	}
 	let posts = notes_to_posts(&notes, true);
 
 	let generated = write_zola_site(dir.path(), &user, &posts).unwrap();
-	assert_eq!(generated.posts, 4);
+	assert_eq!(generated.posts, 3);
 	assert_eq!(generated.pages, 0);
 
 	let output = Command::new("zola")
@@ -225,6 +274,71 @@ fn zola_build_omits_tags_link_without_public_tags() {
 	assert_not_contains(&index, ">Tags<");
 	let tags = read(&public, "tags/index.html");
 	assert_contains(&tags, "No tags found in the synced Evernote cache.");
+}
+
+#[test]
+fn zola_build_uses_notebook_config_note() {
+	let dir = tempfile::tempdir().unwrap();
+	let user = user_fixture();
+	let notes = vec![
+		Note {
+			guid: "config".into(),
+			title: "everpublich:config".into(),
+			created: utc(1_700_000_000),
+			updated: utc(1_700_000_000),
+			tags: vec![],
+			enml: r#"<en-note><p>widgets: off</p><pre><code class="language-css">.notebook-config { color: red; }</code></pre><pre><code class="language-js">window.everpublichConfigTest = true;</code></pre></en-note>"#.into(),
+			resources: vec![],
+		},
+		Note {
+			guid: "nav".into(),
+			title: "everpublich:#postgres".into(),
+			created: utc(1_700_000_001),
+			updated: utc(1_700_000_001),
+			tags: vec![],
+			enml: "<en-note><p>PostgreSQL navigation</p></en-note>".into(),
+			resources: vec![],
+		},
+		Note {
+			guid: "post".into(),
+			title: "PostgreSQL post".into(),
+			created: utc(1_700_000_002),
+			updated: utc(1_700_000_002),
+			tags: vec!["postgres".into()],
+			enml: "<en-note><p>https://youtu.be/dQw4w9WgXcQ</p></en-note>".into(),
+			resources: vec![],
+		},
+	];
+	let posts = notes_to_posts(&notes, true);
+
+	let generated = write_zola_site(dir.path(), &user, &posts).unwrap();
+	assert_eq!(generated.posts, 1);
+	assert_eq!(generated.pages, 0);
+
+	let output = Command::new("zola")
+		.arg("--root")
+		.arg(dir.path())
+		.arg("build")
+		.output()
+		.expect("zola binary must be installed for the end-to-end HTML test");
+	assert!(
+		output.status.success(),
+		"zola build failed\nstdout:\n{}\nstderr:\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+
+	let index = read(&dir.path().join("public"), "index.html");
+	assert_contains(&index, ".notebook-config");
+	assert_contains(&index, "everpublichConfigTest");
+	assert_contains(
+		&index,
+		"href=https://my-notebook.everpublich.example/tags/postgres/",
+	);
+	assert_contains(&index, "title=\"PostgreSQL navigation\"");
+	assert_contains(&index, ">#postgres<");
+	assert_contains(&index, "https://youtu.be/dQw4w9WgXcQ");
+	assert_not_contains(&index, "www.youtube.com/embed");
 }
 
 fn user_fixture() -> UserItem {
@@ -298,10 +412,10 @@ fn note_fixtures() -> Vec<Note> {
 		},
 		Note {
 			guid: "44444444-4444-4444-4444-444444444444".into(),
-			title: "About".into(),
+			title: "everpublich:about".into(),
 			created: utc(1_700_259_200),
 			updated: utc(1_700_259_300),
-			tags: vec!["about".into()],
+			tags: vec![],
 			enml: "<en-note><p>I use Evernote from 2009 and love it.</p></en-note>".into(),
 			resources: vec![],
 		},

@@ -5,6 +5,7 @@
 	--muted: #686868;
 	--line: #e6e1d8;
 	--panel: #f7f8f2;
+	--quote-bg: #eef4eb;
 	--link: #0b63ce;
 	--accent: #207a4d;
 }
@@ -16,8 +17,13 @@
 		--muted: #9a9a9a;
 		--line: #202020;
 		--panel: #101010;
+		--quote-bg: #0b1510;
 		--link: #7ab7ff;
 		--accent: #6ed69a;
+	}
+
+	span[style*="--en-highlight"] {
+		color: #151515 !important;
 	}
 }
 
@@ -27,7 +33,7 @@
 
 body {
 	margin: 0 auto;
-	width: 95vw;
+	width: 99vw;
 	min-height: 100vh;
 	padding: 18px;
 	display: flex;
@@ -46,6 +52,16 @@ main {
 a {
 	color: var(--link);
 	text-decoration: none;
+}
+
+.broken-link {
+	color: #b00020;
+}
+
+@media (prefers-color-scheme: dark) {
+	.broken-link {
+		color: #ff6b7a;
+	}
 }
 
 ::selection {
@@ -92,6 +108,22 @@ code {
 pre code {
 	background: none;
 	padding: 0;
+}
+
+blockquote:not(.instagram-media) {
+	margin: 1rem 0;
+	border-left: 4px solid var(--accent);
+	border-radius: 4px;
+	background: var(--quote-bg);
+	padding: .75rem 1rem;
+}
+
+blockquote:not(.instagram-media) > :first-child {
+	margin-top: 0;
+}
+
+blockquote:not(.instagram-media) > :last-child {
+	margin-bottom: 0;
 }
 
 .site-header {
@@ -208,17 +240,29 @@ pre code {
 }
 
 .embed-youtube,
-.embed-vimeo {
+.embed-vimeo,
+.embed-rumble,
+.embed-odysee,
+.embed-bilibili,
+.embed-tiktok {
 	aspect-ratio: 16/9;
 }
 
 .embed-youtube iframe,
-.embed-vimeo iframe {
+.embed-vimeo iframe,
+.embed-rumble iframe,
+.embed-odysee iframe,
+.embed-bilibili iframe,
+.embed-tiktok iframe {
 	height: 100%;
 }
 
 .embed-spotify iframe {
 	height: 152px;
+}
+
+.embed-soundcloud iframe {
+	height: 400px;
 }
 
 .embed-apple iframe {
@@ -227,6 +271,96 @@ pre code {
 
 .embed-yandex iframe {
 	height: 180px;
+}
+
+.embed-steam iframe {
+	height: 190px;
+}
+
+.embed-vk-playlist iframe {
+	height: 450px;
+}
+
+.embed-mastodon-post iframe {
+	height: 520px;
+}
+
+.mastodon-profile-card {
+	display: flex;
+	gap: 14px;
+	max-width: 540px;
+	padding: 14px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel);
+}
+
+.mastodon-profile-card__avatar {
+	flex: 0 0 72px;
+}
+
+.mastodon-profile-card__avatar img {
+	width: 72px;
+	height: 72px;
+	border-radius: 8px;
+	object-fit: cover;
+}
+
+.mastodon-profile-card__body {
+	min-width: 0;
+}
+
+.mastodon-profile-card__name {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	color: var(--fg);
+}
+
+.mastodon-profile-card__name span,
+.mastodon-profile-card__note,
+.mastodon-profile-card__stats dt {
+	color: var(--muted);
+}
+
+.mastodon-profile-card__note {
+	margin: .55rem 0;
+}
+
+.mastodon-profile-card__stats {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin: 0;
+}
+
+.mastodon-profile-card__stats div {
+	display: flex;
+	gap: 4px;
+}
+
+.mastodon-profile-card__stats dd {
+	margin: 0;
+	font-weight: 650;
+}
+
+@media (prefers-color-scheme: dark) {
+	.embed-genius {
+		background: #080808;
+		border-radius: 4px;
+		padding: .75rem;
+		color: var(--fg);
+		overflow: hidden;
+	}
+
+	.embed-genius,
+	.embed-genius * {
+		color: var(--fg) !important;
+	}
+
+	.embed-genius a {
+		color: var(--link) !important;
+	}
 }
 
 .calendar-months {

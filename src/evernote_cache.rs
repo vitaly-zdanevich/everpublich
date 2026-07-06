@@ -465,13 +465,15 @@ fn read_attachments(
 }
 
 fn find_cached_resource_file(config_dir: &Path, hash: &str) -> Result<Option<PathBuf>> {
-	let root = config_dir.join("conduit-fs");
-	if !root.exists() {
-		return Ok(None);
-	}
-
 	let wanted = hash.to_ascii_lowercase();
-	let mut stack = vec![root];
+	let roots = [
+		config_dir.join("conduit-fs"),
+		config_dir.join("resource-cache"),
+	];
+	let mut stack = roots
+		.into_iter()
+		.filter(|root| root.exists())
+		.collect::<Vec<_>>();
 	while let Some(dir) = stack.pop() {
 		for entry in
 			fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
@@ -487,6 +489,9 @@ fn find_cached_resource_file(config_dir: &Path, hash: &str) -> Result<Option<Pat
 				continue;
 			}
 			let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+			if name.ends_with(".meta") {
+				continue;
+			}
 			if name == wanted || name == format!("{wanted}.dat") {
 				return Ok(Some(path));
 			}
@@ -582,12 +587,22 @@ fn rte_doc_to_enml_with_decoder(
 	let update = decode(bytes)?;
 	doc.transact_mut().apply_update(update)?;
 	let txn = doc.transact();
-	let enml = serialize_xml_fragment(&content, &txn);
+	let enml = restore_adjacent_inline_spacing(&serialize_xml_fragment(&content, &txn));
 	if enml.trim().is_empty() {
 		Ok(None)
 	} else {
 		Ok(Some(enml))
 	}
+}
+
+fn restore_adjacent_inline_spacing(html: &str) -> String {
+	let adjacent_inline_words = Regex::new(
+		r#"(?is)([\p{L}\p{N}])</(b|i|u|s|span)>\s*<(b|i|u|s|span)([^>]*)>([\p{L}\p{N}])"#,
+	)
+	.unwrap();
+	adjacent_inline_words
+		.replace_all(html, "$1</$2>&nbsp;<$3$4>$5")
+		.into_owned()
 }
 
 fn serialize_xml_fragment<T: ReadTxn>(fragment: &XmlFragmentRef, txn: &T) -> String {
@@ -640,22 +655,45 @@ fn serialize_xml_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, out: &mut
 }
 
 fn serialize_xml_text<T: ReadTxn>(text: &XmlTextRef, txn: &T, out: &mut String) {
+	let mut previous_formatted_word_end = false;
 	for diff in text.diff(txn, YChange::identity) {
 		let attributes = diff
 			.attributes
 			.as_deref()
 			.map(sorted_text_attributes)
 			.unwrap_or_default();
+		let (first, last) = text_insert_edges(&diff.insert);
+		if previous_formatted_word_end
+			&& !attributes.is_empty()
+			&& first.is_some_and(is_word_character)
+		{
+			out.push_str("&nbsp;");
+		}
 		for (key, value) in &attributes {
 			push_text_format_start(out, key, value);
 		}
 		serialize_text_insert(diff.insert, txn, out);
 		for (key, _) in attributes.iter().rev() {
 			out.push_str("</");
-			out.push_str(key);
+			out.push_str(text_format_tag_name(key));
 			out.push('>');
 		}
+		previous_formatted_word_end = !attributes.is_empty() && last.is_some_and(is_word_character);
 	}
+}
+
+fn text_insert_edges(insert: &Out) -> (Option<char>, Option<char>) {
+	let text = match insert {
+		Out::Any(Any::String(value)) => value.to_string(),
+		Out::Any(value) => value.to_string(),
+		Out::YXmlElement(_) | Out::YXmlFragment(_) | Out::YXmlText(_) => return (None, None),
+		other => other.to_string(),
+	};
+	(text.chars().next(), text.chars().next_back())
+}
+
+fn is_word_character(character: char) -> bool {
+	character.is_alphanumeric()
 }
 
 fn serialize_text_insert<T: ReadTxn>(insert: Out, txn: &T, out: &mut String) {
@@ -681,7 +719,7 @@ fn sorted_text_attributes(attributes: &yrs::types::Attrs) -> Vec<(&str, &Any)> {
 
 fn push_text_format_start(out: &mut String, tag: &str, value: &Any) {
 	out.push('<');
-	out.push_str(tag);
+	out.push_str(text_format_tag_name(tag));
 	if let Any::Map(attributes) = value {
 		let mut attributes = attributes.iter().collect::<Vec<_>>();
 		attributes.sort_by(|left, right| left.0.cmp(right.0));
@@ -694,6 +732,14 @@ fn push_text_format_start(out: &mut String, tag: &str, value: &Any) {
 		}
 	}
 	out.push('>');
+}
+
+/// Map Evernote's rich-text mark names to HTML tags we want in generated ENML.
+fn text_format_tag_name(tag: &str) -> &str {
+	match tag.to_ascii_lowercase().as_str() {
+		"codespan" | "inlinecode" | "inline-code" | "monospace" => "code",
+		_ => tag,
+	}
 }
 
 fn is_self_closing_enml_tag(tag: &str) -> bool {
@@ -823,6 +869,7 @@ fn copy_resource_files(site_dir: &Path, notes: &[CachedNote], posts: &[Post]) ->
 			PostKind::BlogPost => site_dir.join("content/posts").join(&post.slug),
 			PostKind::Page => site_dir.join("content/pages").join(&post.slug),
 			PostKind::About => site_dir.join("content/pages/about"),
+			PostKind::NavTag | PostKind::Config => continue,
 		};
 		for file in &cached.files {
 			fs::copy(&file.source_path, content_dir.join(&file.file_name)).with_context(|| {
@@ -1432,6 +1479,23 @@ mod tests {
 	}
 
 	#[test]
+	fn finds_resource_cache_blobs_by_hash() {
+		let temp = tempfile::tempdir().unwrap();
+		let config_dir = temp.path().join("Evernote");
+		let resource_dir = config_dir
+			.join("resource-cache")
+			.join("User42")
+			.join("note-guid");
+		fs::create_dir_all(&resource_dir).unwrap();
+		fs::write(resource_dir.join("abc123.meta"), "metadata").unwrap();
+		fs::write(resource_dir.join("abc123"), "image").unwrap();
+
+		let found = find_cached_resource_file(&config_dir, "ABC123").unwrap();
+
+		assert_eq!(found, Some(resource_dir.join("abc123")));
+	}
+
+	#[test]
 	fn extracts_body_text_from_rte_cache_fallback() {
 		let bytes = b"fontWeight\0inherit\0y Body text from rte\0content\0en-note";
 
@@ -1510,9 +1574,7 @@ mod tests {
 
 	#[test]
 	fn decodes_rte_yjs_doc_to_enml() {
-		use yrs::{
-			ReadTxn, StateVector, Transact, Xml, XmlElementPrelim, XmlFragment, XmlTextPrelim,
-		};
+		use yrs::{ReadTxn, StateVector, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim};
 
 		let doc = Doc::new();
 		let content = doc.get_or_insert_xml_fragment("content");
@@ -1546,8 +1608,7 @@ mod tests {
 		use std::sync::Arc;
 		use yrs::types::Attrs;
 		use yrs::{
-			Any, ReadTxn, StateVector, Text, Transact, Xml, XmlElementPrelim, XmlFragment,
-			XmlTextPrelim,
+			Any, ReadTxn, StateVector, Text, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim,
 		};
 
 		let doc = Doc::new();
@@ -1602,6 +1663,116 @@ mod tests {
 		assert!(enml.contains(r#"<col style="width: 42px"/>"#));
 		assert!(enml.contains(r#"<td style="background-color: #fff">table cell</td>"#));
 		assert!(enml.contains(r#"<en-media hash="abc123" type="image/png"/>"#));
+	}
+
+	#[test]
+	fn keeps_spaces_between_adjacent_formatted_words() {
+		use yrs::types::Attrs;
+		use yrs::{
+			Any, ReadTxn, StateVector, Text, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim,
+		};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+		let div = en_note.push_back(&mut txn, XmlElementPrelim::empty("div"));
+		let text = div.push_back(&mut txn, XmlTextPrelim::new(""));
+		text.insert_with_attributes(
+			&mut txn,
+			0,
+			"Bold",
+			Attrs::from([("b".into(), Any::Bool(true))]),
+		);
+		text.insert_with_attributes(
+			&mut txn,
+			4,
+			"italic ",
+			Attrs::from([("i".into(), Any::Bool(true))]),
+		);
+		text.insert_with_attributes(
+			&mut txn,
+			11,
+			"under",
+			Attrs::from([("u".into(), Any::Bool(true))]),
+		);
+		text.insert_with_attributes(
+			&mut txn,
+			16,
+			" strike",
+			Attrs::from([("s".into(), Any::Bool(true))]),
+		);
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains("<b>Bold</b>&nbsp;<i>italic </i><u>under</u><s> strike</s>"));
+	}
+
+	#[test]
+	fn keeps_spaces_between_adjacent_inline_elements() {
+		use yrs::{ReadTxn, StateVector, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+		let div = en_note.push_back(&mut txn, XmlElementPrelim::empty("div"));
+		let bold = div.push_back(&mut txn, XmlElementPrelim::empty("b"));
+		bold.push_back(&mut txn, XmlTextPrelim::new("Bold"));
+		let italic = div.push_back(&mut txn, XmlElementPrelim::empty("i"));
+		italic.push_back(&mut txn, XmlTextPrelim::new("italic "));
+		let underline = div.push_back(&mut txn, XmlElementPrelim::empty("u"));
+		underline.push_back(&mut txn, XmlTextPrelim::new("under"));
+		let strike = div.push_back(&mut txn, XmlElementPrelim::empty("s"));
+		strike.push_back(&mut txn, XmlTextPrelim::new(" strike"));
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains("<b>Bold</b>&nbsp;<i>italic </i><u>under</u><s> strike</s>"));
+	}
+
+	#[test]
+	fn keeps_existing_spaces_between_inline_elements_minifier_safe() {
+		let html = restore_adjacent_inline_spacing("<b>Bold</b> <i>italic</i>");
+
+		assert_eq!(html, "<b>Bold</b>&nbsp;<i>italic</i>");
+	}
+
+	#[test]
+	fn maps_rich_text_inline_code_marks() {
+		use yrs::types::Attrs;
+		use yrs::{
+			Any, ReadTxn, StateVector, Text, Transact, XmlElementPrelim, XmlFragment, XmlTextPrelim,
+		};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+		let paragraph = en_note.push_back(&mut txn, XmlElementPrelim::empty("p"));
+		let text = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+		text.insert_with_attributes(
+			&mut txn,
+			0,
+			"inline_code",
+			Attrs::from([("codespan".into(), Any::Bool(true))]),
+		);
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains("<code>inline_code</code>"));
 	}
 
 	#[test]

@@ -285,6 +285,17 @@ pub enum PostKind {
 	Page,
 	/// About page.
 	About,
+	/// Metadata note that adds a tag archive link to the top navigation.
+	NavTag,
+	/// Notebook-level configuration note, not rendered as public content.
+	Config,
+}
+
+impl PostKind {
+	/// Whether this note should get a public URL and internal Evernote links.
+	pub fn is_linkable(self) -> bool {
+		matches!(self, Self::BlogPost | Self::Page | Self::About)
+	}
 }
 
 #[cfg(test)]
