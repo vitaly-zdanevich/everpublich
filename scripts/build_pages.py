@@ -13,7 +13,7 @@ WEB = ROOT / 'web'
 OUTPUT = ROOT / 'dist' / 'pages'
 
 DEFAULT_API_BASE_URL = ''
-HTML_TEMPLATES = ('index.html', 'admin.html', 'pricing.html')
+HTML_TEMPLATES = ('index.html', 'admin.html', 'pay.htm')
 MINIFIED_ASSETS = {
 	'admin.js': 'admin.min.js',
 	'app.css': 'app.min.css',
@@ -35,6 +35,8 @@ def replacements() -> dict[str, str]:
 			'SUPPORT_TICKETS',
 			'https://github.com/vitaly-zdanevich/everpublich/issues',
 		),
+		'__STRIPE_PRICING_TABLE_ID__': env('EVERPUBLICH_STRIPE_PRICING_TABLE_ID', ''),
+		'__STRIPE_PUBLISHABLE_KEY__': env('EVERPUBLICH_STRIPE_PUBLISHABLE_KEY', ''),
 	}
 
 

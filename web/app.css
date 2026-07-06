@@ -189,7 +189,7 @@ button:disabled {
 .feature-grid li,
 .admin-panel,
 .support,
-.stripe-placeholder {
+.stripe-widget {
 	background: var(--panel);
 	border: 1px solid var(--line);
 	border-radius: 8px;
