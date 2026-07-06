@@ -45,6 +45,7 @@ class BuildPagesTest(unittest.TestCase):
 		self.assertIn('prefers-color-scheme', css)
 		self.assertIn('::selection', css)
 		self.assertIn('background-color:#292', css)
+		self.assertIn('.feature-grid+h2{margin-top:48px}', css)
 		self.assertIn('min-height:100vh', css)
 		self.assertIn('main{', css)
 		self.assertIn('width:min(1120px,100% - 28px)', css)

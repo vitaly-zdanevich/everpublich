@@ -193,6 +193,10 @@ button:disabled {
 	list-style: none;
 }
 
+.feature-grid + h2 {
+	margin-top: 48px;
+}
+
 .feature-grid li,
 .admin-panel,
 .support,
