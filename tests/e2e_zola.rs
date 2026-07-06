@@ -127,6 +127,27 @@ fn zola_build_renders_public_html() {
 	assert!(public.join("rss.xml").exists());
 	assert!(public.join("podcast.xml").exists());
 	assert!(public.join("tags/intro/index.html").exists());
+
+	let podcast = read(&public, "podcast.xml");
+	assert_contains(
+		&podcast,
+		r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">"#,
+	);
+	assert_contains(&podcast, "<language>en</language>");
+	assert_contains(&podcast, "<generator>Everpublich</generator>");
+	assert_contains(&podcast, "<itunes:explicit>false</itunes:explicit>");
+	assert_contains(
+		&podcast,
+		"<guid isPermaLink=\"true\">https://my-notebook.everpublich.example/posts/media-note/</guid>",
+	);
+	assert_contains(
+		&podcast,
+		"<description>Audio and video stay playable.</description>",
+	);
+	assert_contains(
+		&podcast,
+		"enclosure url=\"https://my-notebook.everpublich.example/posts/media-note/episode.mp3\" type=\"audio/mpeg\" length=\"0\"",
+	);
 }
 
 #[test]

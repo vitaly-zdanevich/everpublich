@@ -1541,6 +1541,70 @@ mod tests {
 	}
 
 	#[test]
+	fn decodes_rte_yjs_doc_with_evernote_rich_blocks() {
+		use std::collections::HashMap;
+		use std::sync::Arc;
+		use yrs::types::Attrs;
+		use yrs::{
+			Any, ReadTxn, StateVector, Text, Transact, Xml, XmlElementPrelim, XmlFragment,
+			XmlTextPrelim,
+		};
+
+		let doc = Doc::new();
+		let content = doc.get_or_insert_xml_fragment("content");
+		let mut txn = doc.transact_mut();
+		let en_note = content.push_back(&mut txn, XmlElementPrelim::empty("en-note"));
+
+		let heading = en_note.push_back(&mut txn, XmlElementPrelim::empty("div"));
+		let styled_text = heading.push_back(&mut txn, XmlTextPrelim::new(""));
+		let span_attrs = Attrs::from([(
+			"span".into(),
+			Any::Map(Arc::new(HashMap::from([(
+				"style".into(),
+				Any::String("font-family: Georgia; font-size: 20px; color: #207a4d".into()),
+			)]))),
+		)]);
+		styled_text.insert_with_attributes(&mut txn, 0, "Styled heading", span_attrs);
+
+		let paragraph = en_note.push_back(&mut txn, XmlElementPrelim::empty("p"));
+		let link = paragraph.push_back(&mut txn, XmlElementPrelim::empty("a"));
+		link.insert_attribute(&mut txn, "href", "https://example.com/?a=1&b=2");
+		link.push_back(&mut txn, XmlTextPrelim::new("Reference"));
+		paragraph.push_back(&mut txn, XmlTextPrelim::new(" "));
+		let todo = paragraph.push_back(&mut txn, XmlElementPrelim::empty("en-todo"));
+		todo.insert_attribute(&mut txn, "checked", "true");
+
+		let table = en_note.push_back(&mut txn, XmlElementPrelim::empty("table"));
+		let colgroup = table.push_back(&mut txn, XmlElementPrelim::empty("colgroup"));
+		let col = colgroup.push_back(&mut txn, XmlElementPrelim::empty("col"));
+		col.insert_attribute(&mut txn, "style", "width: 42px");
+		let tbody = table.push_back(&mut txn, XmlElementPrelim::empty("tbody"));
+		let row = tbody.push_back(&mut txn, XmlElementPrelim::empty("tr"));
+		let cell = row.push_back(&mut txn, XmlElementPrelim::empty("td"));
+		cell.insert_attribute(&mut txn, "style", "background-color: #fff");
+		cell.push_back(&mut txn, XmlTextPrelim::new("table cell"));
+
+		let media = en_note.push_back(&mut txn, XmlElementPrelim::empty("en-media"));
+		media.insert_attribute(&mut txn, "hash", "abc123");
+		media.insert_attribute(&mut txn, "type", "image/png");
+		drop(txn);
+
+		let update = doc
+			.transact()
+			.encode_state_as_update_v1(&StateVector::default());
+		let enml = rte_doc_to_enml(&update).unwrap().unwrap();
+
+		assert!(enml.contains(
+			r#"<span style="font-family: Georgia; font-size: 20px; color: #207a4d">Styled heading</span>"#
+		));
+		assert!(enml.contains(r#"<a href="https://example.com/?a=1&amp;b=2">Reference</a>"#));
+		assert!(enml.contains(r#"<en-todo checked="true"/>"#));
+		assert!(enml.contains(r#"<col style="width: 42px"/>"#));
+		assert!(enml.contains(r#"<td style="background-color: #fff">table cell</td>"#));
+		assert!(enml.contains(r#"<en-media hash="abc123" type="image/png"/>"#));
+	}
+
+	#[test]
 	fn rich_text_enml_removes_metadata_and_keeps_source_and_resources() {
 		let resources = vec![Resource {
 			hash: "abc123".into(),

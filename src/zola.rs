@@ -1,6 +1,6 @@
 //! Zola source tree generation.
 
-use crate::models::{IndexMode, Post, PostKind, SearchMode, SiteSettings, UserItem};
+use crate::models::{IndexMode, Post, PostKind, Resource, SearchMode, SiteSettings, UserItem};
 use crate::slug::slugify;
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate};
@@ -8,6 +8,9 @@ use html_escape::{
 	decode_html_entities, encode_double_quoted_attribute, encode_single_quoted_attribute,
 	encode_text,
 };
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use regex::Regex;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +18,18 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+const URL_PATH_SEGMENT_ENCODE: &AsciiSet = &CONTROLS
+	.add(b' ')
+	.add(b'"')
+	.add(b'#')
+	.add(b'%')
+	.add(b'<')
+	.add(b'>')
+	.add(b'?')
+	.add(b'`')
+	.add(b'{')
+	.add(b'}');
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Summary of a generated Zola source tree.
@@ -545,43 +560,253 @@ fn write_podcast(root: &Path, settings: &SiteSettings, posts: &[Post]) -> Result
 			continue;
 		};
 		count += 1;
-		let url = format!(
-			"{}posts/{}/{}",
-			settings.base_url,
-			post.slug,
-			encode_double_quoted_attribute(&audio.file_name)
-		);
-		let _ = writeln!(
-			items,
-			"<item><title>{}</title><link>{}posts/{}/</link><guid>{}posts/{}/</guid><pubDate>{}</pubDate><enclosure url=\"{}\" type=\"{}\" length=\"0\"/></item>",
-			encode_text(&post.title),
-			settings.base_url,
-			post.slug,
-			settings.base_url,
-			post.slug,
-			post.date.to_rfc2822(),
-			url,
-			encode_double_quoted_attribute(&audio.mime),
-		);
+		items.push_str(&podcast_item_xml(settings, post, audio));
 	}
 
 	let xml = format!(
 		r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
 <channel>
 <title>{}</title>
 <link>{}</link>
 <description>Podcast feed generated from Evernote notes tagged podcast.</description>
+<language>en</language>
+<generator>Everpublich</generator>
+<itunes:author>{}</itunes:author>
+<itunes:summary>Podcast feed generated from Evernote notes tagged podcast.</itunes:summary>
+<itunes:explicit>false</itunes:explicit>
 {}
 </channel>
 </rss>
 "#,
 		encode_text(&settings.title),
 		encode_text(&settings.base_url),
+		encode_text(&settings.title),
 		items
 	);
+	validate_podcast_xml(&xml, count)?;
 	write_file(&root.join("static/podcast.xml"), &xml)?;
 	Ok(count)
+}
+
+/// Render one podcast feed item and keep media URLs absolute for podcast
+/// clients that do not resolve relative paths against the feed URL.
+fn podcast_item_xml(settings: &SiteSettings, post: &Post, audio: &Resource) -> String {
+	let post_url = site_url(&settings.base_url, &format!("posts/{}/", post.slug));
+	let audio_url = site_url(
+		&settings.base_url,
+		&format!(
+			"posts/{}/{}",
+			post.slug,
+			percent_encode_path_segment(&audio.file_name)
+		),
+	);
+	let description = podcast_description(post);
+	format!(
+		"<item>\
+<title>{}</title>\
+<link>{}</link>\
+<guid isPermaLink=\"true\">{}</guid>\
+<pubDate>{}</pubDate>\
+<description>{}</description>\
+<itunes:summary>{}</itunes:summary>\
+<itunes:episodeType>full</itunes:episodeType>\
+<enclosure url=\"{}\" type=\"{}\" length=\"0\"/>\
+</item>\n",
+		encode_text(&post.title),
+		encode_text(&post_url),
+		encode_text(&post_url),
+		post.date.to_rfc2822(),
+		encode_text(&description),
+		encode_text(&description),
+		encode_double_quoted_attribute(&audio_url),
+		encode_double_quoted_attribute(&audio.mime),
+	)
+}
+
+fn podcast_description(post: &Post) -> String {
+	let text = post_plain_text(&post.body);
+	if text.is_empty() {
+		truncate_chars(post.title.trim(), 4000)
+	} else {
+		truncate_chars(&text, 4000)
+	}
+}
+
+fn percent_encode_path_segment(segment: &str) -> String {
+	utf8_percent_encode(segment, URL_PATH_SEGMENT_ENCODE).to_string()
+}
+
+/// Parse the generated feed and fail the build when required podcast fields
+/// are missing.
+fn validate_podcast_xml(xml: &str, expected_items: usize) -> Result<()> {
+	let mut reader = Reader::from_str(xml);
+	reader.config_mut().trim_text(true);
+	let mut root_ok = false;
+	let mut channel = ChannelValidation::default();
+	let mut current_item: Option<ItemValidation> = None;
+	let mut items = Vec::new();
+	let mut current_text_tag: Option<Vec<u8>> = None;
+
+	loop {
+		match reader.read_event()? {
+			Event::Start(element) => {
+				let name = element.name().as_ref().to_vec();
+				if name.as_slice() == b"rss" {
+					root_ok = attr_value(&element, b"xmlns:itunes").as_deref()
+						== Some("http://www.itunes.com/dtds/podcast-1.0.dtd");
+				} else if name.as_slice() == b"item" {
+					current_item = Some(ItemValidation::default());
+				} else {
+					current_text_tag = Some(name);
+				}
+			}
+			Event::Empty(element) if element.name().as_ref() == b"enclosure" => {
+				let Some(item) = current_item.as_mut() else {
+					anyhow::bail!("podcast enclosure outside item");
+				};
+				item.enclosures += 1;
+				item.audio_enclosure = attr_value(&element, b"type")
+					.as_deref()
+					.is_some_and(|mime| mime.starts_with("audio/"))
+					&& attr_value(&element, b"url")
+						.as_deref()
+						.is_some_and(|url| url.starts_with("https://"));
+			}
+			Event::Text(text) => {
+				let Some(tag) = current_text_tag.as_deref() else {
+					continue;
+				};
+				let text = text.decode()?.trim().to_string();
+				if text.is_empty() {
+					continue;
+				}
+				if let Some(item) = current_item.as_mut() {
+					item.mark_text(tag);
+				} else {
+					channel.mark_text(tag);
+				}
+			}
+			Event::End(element) => {
+				let name = element.name().as_ref().to_vec();
+				if name.as_slice() == b"item" {
+					let Some(item) = current_item.take() else {
+						anyhow::bail!("podcast item end without start");
+					};
+					items.push(item);
+				}
+				if current_text_tag.as_deref() == Some(name.as_slice()) {
+					current_text_tag = None;
+				}
+			}
+			Event::Eof => break,
+			_ => {}
+		}
+	}
+
+	anyhow::ensure!(root_ok, "podcast feed missing iTunes RSS namespace");
+	anyhow::ensure!(
+		channel.is_valid(),
+		"podcast channel is missing required metadata"
+	);
+	anyhow::ensure!(
+		items.len() == expected_items,
+		"podcast feed has {} item(s), expected {expected_items}",
+		items.len()
+	);
+	for item in items {
+		anyhow::ensure!(item.is_valid(), "podcast item is missing required metadata");
+	}
+	Ok(())
+}
+
+fn attr_value(element: &BytesStart, name: &[u8]) -> Option<String> {
+	element.attributes().flatten().find_map(|attribute| {
+		if attribute.key.as_ref() == name {
+			Some(String::from_utf8_lossy(attribute.value.as_ref()).to_string())
+		} else {
+			None
+		}
+	})
+}
+
+#[derive(Default)]
+struct ChannelValidation {
+	title: bool,
+	link: bool,
+	description: bool,
+	language: bool,
+	generator: bool,
+	itunes_author: bool,
+	itunes_summary: bool,
+	itunes_explicit: bool,
+}
+
+impl ChannelValidation {
+	fn mark_text(&mut self, tag: &[u8]) {
+		match tag {
+			b"title" => self.title = true,
+			b"link" => self.link = true,
+			b"description" => self.description = true,
+			b"language" => self.language = true,
+			b"generator" => self.generator = true,
+			b"itunes:author" => self.itunes_author = true,
+			b"itunes:summary" => self.itunes_summary = true,
+			b"itunes:explicit" => self.itunes_explicit = true,
+			_ => {}
+		}
+	}
+
+	fn is_valid(&self) -> bool {
+		self.title
+			&& self.link
+			&& self.description
+			&& self.language
+			&& self.generator
+			&& self.itunes_author
+			&& self.itunes_summary
+			&& self.itunes_explicit
+	}
+}
+
+#[derive(Default)]
+struct ItemValidation {
+	title: bool,
+	link: bool,
+	guid: bool,
+	pub_date: bool,
+	description: bool,
+	itunes_summary: bool,
+	itunes_episode_type: bool,
+	enclosures: usize,
+	audio_enclosure: bool,
+}
+
+impl ItemValidation {
+	fn mark_text(&mut self, tag: &[u8]) {
+		match tag {
+			b"title" => self.title = true,
+			b"link" => self.link = true,
+			b"guid" => self.guid = true,
+			b"pubDate" => self.pub_date = true,
+			b"description" => self.description = true,
+			b"itunes:summary" => self.itunes_summary = true,
+			b"itunes:episodeType" => self.itunes_episode_type = true,
+			_ => {}
+		}
+	}
+
+	fn is_valid(&self) -> bool {
+		self.title
+			&& self.link
+			&& self.guid
+			&& self.pub_date
+			&& self.description
+			&& self.itunes_summary
+			&& self.itunes_episode_type
+			&& self.enclosures == 1
+			&& self.audio_enclosure
+	}
 }
 
 fn write_templates(root: &Path) -> Result<()> {
@@ -841,10 +1066,10 @@ mod tests {
 			created: utc(1_700_000_000),
 			updated: utc(1_700_000_000),
 			tags: vec!["podcast".into()],
-			enml: r#"<en-note><en-media type="audio/mpeg" hash="abc"/></en-note>"#.into(),
+			enml: r#"<en-note><p>Episode intro with &amp; escaped text.</p><en-media type="audio/mpeg" hash="abc"/></en-note>"#.into(),
 			resources: vec![Resource {
 				hash: "abc".into(),
-				file_name: "episode.mp3".into(),
+				file_name: "episode one.mp3".into(),
 				mime: "audio/mpeg".into(),
 				s3_key: None,
 			}],
@@ -856,12 +1081,36 @@ mod tests {
 		assert_eq!(generated.podcast_items, 1);
 		assert!(dir.path().join("config.toml").exists());
 		assert!(dir.path().join("content/posts/episode/index.md").exists());
-		assert!(dir.path().join("static/podcast.xml").exists());
+		let podcast = fs::read_to_string(dir.path().join("static/podcast.xml")).unwrap();
+		assert!(podcast.contains(
+			r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">"#
+		));
+		assert!(podcast.contains("<language>en</language>"));
+		assert!(podcast.contains("<generator>Everpublich</generator>"));
+		assert!(podcast.contains("<itunes:explicit>false</itunes:explicit>"));
+		assert!(podcast.contains(
+			"<guid isPermaLink=\"true\">https://my-site.everpublich.example/posts/episode/</guid>"
+		));
+		assert!(
+			podcast.contains("<description>Episode intro with &amp; escaped text.</description>")
+		);
+		assert!(podcast.contains(
+			"enclosure url=\"https://my-site.everpublich.example/posts/episode/episode%20one.mp3\" type=\"audio/mpeg\" length=\"0\""
+		));
 		assert!(
 			fs::read_to_string(dir.path().join("templates/shortcodes/genius.html"))
 				.unwrap()
 				.contains("id='rg_embed_link_{{ song_id }}'")
 		);
+	}
+
+	#[test]
+	fn rejects_invalid_podcast_feed() {
+		let error = validate_podcast_xml("<rss><channel></channel></rss>", 0)
+			.unwrap_err()
+			.to_string();
+
+		assert!(error.contains("podcast feed missing iTunes RSS namespace"));
 	}
 
 	#[test]
