@@ -47,6 +47,14 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all-targets
+      - name: Build release binary
+        run: cargo build --release --locked --bin everpublich-cli
+      - name: Upload release binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v5
+        with:
+          name: everpublich-cli-x86_64-unknown-linux-gnu
+          path: target/release/everpublich-cli
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
       - name: Generate Rust coverage

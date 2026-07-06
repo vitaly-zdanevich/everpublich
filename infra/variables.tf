@@ -16,12 +16,6 @@ variable "project_name" {
   default     = "everpublich"
 }
 
-variable "repository_url" {
-  type        = string
-  description = "Git repository cloned onto the VM for in-place builds."
-  default     = "https://github.com/vitaly-zdanevich/everpublich.git"
-}
-
 variable "base_domain" {
   type        = string
   description = "Root domain for per-user subdomains. Until CloudFront aliases are configured, test generated sites with the CloudFront URL."
@@ -146,8 +140,8 @@ variable "zola_version" {
 
 variable "install_rustup_on_boot" {
   type        = bool
-  description = "Install a minimal Rust toolchain under the everpublich Linux user during cloud-init."
-  default     = true
+  description = "Install a minimal Rust toolchain under the everpublich Linux user during cloud-init. Normally false because deployment uploads a prebuilt binary."
+  default     = false
 }
 
 variable "install_zola_on_boot" {
@@ -158,20 +152,20 @@ variable "install_zola_on_boot" {
 
 variable "install_evernote_gui_deps" {
   type        = bool
-  description = "Install common GUI/keyring libraries needed by the official Evernote Linux client."
-  default     = true
+  description = "Install GUI/keyring libraries needed only by the legacy official Evernote Linux client fallback."
+  default     = false
 }
 
 variable "install_evernote_appimage_on_boot" {
   type        = bool
-  description = "Download and install the latest Evernote AppImage during cloud-init."
-  default     = true
+  description = "Download and install the latest Evernote AppImage for the legacy desktop-cache fallback."
+  default     = false
 }
 
 variable "run_evernote_on_boot" {
   type        = bool
-  description = "Start the Evernote AppImage systemd service after cloud-init installs it."
-  default     = true
+  description = "Start the legacy Evernote AppImage systemd service after cloud-init installs it."
+  default     = false
 }
 
 variable "install_cloudwatch_agent_on_boot" {

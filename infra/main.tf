@@ -403,7 +403,6 @@ resource "aws_instance" "app" {
     install_rustup_on_boot     = var.install_rustup_on_boot
     install_zola_on_boot       = var.install_zola_on_boot
     project_name               = var.project_name
-    repository_url             = var.repository_url
     run_evernote_on_boot       = var.run_evernote_on_boot
     s3_bucket                  = aws_s3_bucket.sites.bucket
     cloudfront_distribution_id = var.create_cloudfront_distribution ? aws_cloudfront_distribution.sites[0].id : ""

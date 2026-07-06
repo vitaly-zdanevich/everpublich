@@ -8,17 +8,14 @@ bootcmd:
 packages:
   - btrfs-progs
   - brotli
-  - build-essential
   - ca-certificates
   - curl
   - ffmpeg
-  - git
   - ghostscript
   - imagemagick
   - jq
   - libraw-bin
   - poppler-utils
-  - pkg-config
   - sqlite3
   - tree
   - unzip
@@ -875,17 +872,16 @@ write_files:
       WantedBy=timers.target
 runcmd:
   - [ bash, -lc, 'data_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${data_volume_id_nodash}"; for attempt in $(seq 1 60); do [ -e "$data_device" ] && break; sleep 2; done; if [ ! -e "$data_device" ]; then echo "Btrfs data volume not found at $data_device" >&2; exit 1; fi; if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.btrfs -f -L everpublich-data "$data_device"; fi; mkdir -p /srv/everpublich-data; if ! grep -q " /srv/everpublich-data " /etc/fstab; then printf "%s\n" "LABEL=everpublich-data /srv/everpublich-data btrfs defaults,noatime,compress-force=zstd:${btrfs_zstd_level},space_cache=v2 0 0" >> /etc/fstab; fi; mount /srv/everpublich-data' ]
-  - [ bash, -lc, 'mkdir -p /srv/everpublich-data/var-lib-everpublich /srv/everpublich-data/var-cache-everpublich /srv/everpublich-data/www-sites /srv/everpublich-data/opt-repo /var/www/everpublich /opt/everpublich; if [ ! -L /var/lib/everpublich ]; then rm -rf /var/lib/everpublich && ln -s /srv/everpublich-data/var-lib-everpublich /var/lib/everpublich; fi; if [ ! -L /var/cache/everpublich ]; then rm -rf /var/cache/everpublich && ln -s /srv/everpublich-data/var-cache-everpublich /var/cache/everpublich; fi; if [ ! -L /var/www/everpublich/sites ]; then rm -rf /var/www/everpublich/sites && ln -s /srv/everpublich-data/www-sites /var/www/everpublich/sites; fi; if [ ! -L /opt/everpublich/repo ]; then rm -rf /opt/everpublich/repo && ln -s /srv/everpublich-data/opt-repo /opt/everpublich/repo; fi' ]
+  - [ bash, -lc, 'mkdir -p /srv/everpublich-data/var-lib-everpublich /srv/everpublich-data/var-cache-everpublich /srv/everpublich-data/www-sites /var/www/everpublich /opt/everpublich; if [ ! -L /var/lib/everpublich ]; then rm -rf /var/lib/everpublich && ln -s /srv/everpublich-data/var-lib-everpublich /var/lib/everpublich; fi; if [ ! -L /var/cache/everpublich ]; then rm -rf /var/cache/everpublich && ln -s /srv/everpublich-data/var-cache-everpublich /var/cache/everpublich; fi; if [ ! -L /var/www/everpublich/sites ]; then rm -rf /var/www/everpublich/sites && ln -s /srv/everpublich-data/www-sites /var/www/everpublich/sites; fi' ]
   - [ bash, -lc, 'id -u everpublich >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/everpublich --shell /bin/bash everpublich' ]
   - [ bash, -lc, 'chown root:everpublich /etc/everpublich/everpublich.env && chmod 0640 /etc/everpublich/everpublich.env' ]
-  - [ bash, -lc, 'mkdir -p /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/repo /opt/everpublich/share /var/cache/everpublich /var/lib/everpublich/db /var/lib/everpublich/.config/Evernote /var/www/everpublich/sites' ]
+  - [ bash, -lc, 'mkdir -p /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/share /var/cache/everpublich /var/lib/everpublich/db /var/www/everpublich/sites' ]
   - [ bash, -lc, 'sqlite3 /var/lib/everpublich/db/everpublich.sqlite < /opt/everpublich/share/sqlite-schema.sql' ]
-  - [ bash, -lc, 'chown -R root:root /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/share && chown -R everpublich:everpublich /srv/everpublich-data/var-lib-everpublich /srv/everpublich-data/var-cache-everpublich /srv/everpublich-data/www-sites /srv/everpublich-data/opt-repo' ]
+  - [ bash, -lc, 'chown -R root:root /opt/everpublich/app /opt/everpublich/bin /opt/everpublich/share && chown -R everpublich:everpublich /srv/everpublich-data/var-lib-everpublich /srv/everpublich-data/var-cache-everpublich /srv/everpublich-data/www-sites' ]
   - [ bash, -lc, '/opt/everpublich/bin/install-awscli' ]
   - [ bash, -lc, 'if ${install_cloudwatch_agent}; then /opt/everpublich/bin/install-cloudwatch-agent; fi' ]
   - [ bash, -lc, 'if ${install_evernote_gui_deps}; then apt-get install -y xvfb openbox xpra x11vnc novnc websockify dbus-x11 dbus-user-session gnome-keyring libsecret-1-0 libgtk-3-0 libnss3 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libdbus-glib-1-2 fonts-liberation xauth xdg-utils || true; apt-get install -y libasound2 || apt-get install -y libasound2t64 || true; /opt/everpublich/bin/install-firefox; /opt/everpublich/bin/patch-xpra-html; fi' ]
   - [ bash, -lc, 'if ${install_evernote_appimage}; then /opt/everpublich/bin/install-evernote-appimage; fi' ]
   - [ bash, -lc, 'if ${install_rustup_on_boot}; then sudo -H -u everpublich bash -lc "if [ ! -x /var/lib/everpublich/.cargo/bin/cargo ]; then curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable; else /var/lib/everpublich/.cargo/bin/rustup default stable; fi"; fi' ]
   - [ bash, -lc, 'if ${install_zola_on_boot}; then curl -fsSL "https://github.com/getzola/zola/releases/download/v${zola_version}/zola-v${zola_version}-${zola_target}.tar.gz" -o /tmp/zola.tar.gz && tar -xzf /tmp/zola.tar.gz -C /usr/local/bin zola && chmod 0755 /usr/local/bin/zola || echo "Zola install failed; install it manually from https://www.getzola.org/documentation/getting-started/installation/"; fi' ]
-  - [ bash, -lc, 'if [ ! -d /opt/everpublich/repo/.git ]; then sudo -H -u everpublich git clone --depth 1 "${repository_url}" /opt/everpublich/repo || true; fi; sudo -H -u everpublich git config --global --add safe.directory /srv/everpublich-data/opt-repo || true' ]
-  - [ bash, -lc, 'systemctl daemon-reload && if ${run_evernote_on_boot}; then systemctl enable --now evernote-client.service; else systemctl enable evernote-client.service; fi && systemctl enable --now everpublich-sync.timer' ]
+  - [ bash, -lc, 'systemctl daemon-reload && if ${run_evernote_on_boot}; then systemctl enable --now evernote-client.service; else systemctl disable --now evernote-client.service || true; fi && systemctl enable --now everpublich-sync.timer' ]

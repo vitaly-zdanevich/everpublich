@@ -272,12 +272,12 @@ Create `infra/terraform.tfvars` from `infra/terraform.tfvars.example`, review th
 ./scripts/deploy.sh
 ```
 
-If bootstrap cannot download GitHub/rustup/AppImage assets over IPv6, temporarily set `associate_public_ipv4 = true`, apply, complete bootstrap, then switch it back to `false` to avoid the public IPv4 hourly charge.
+If bootstrap cannot download GitHub, Zola, or AWS CLI assets over IPv6, temporarily set `associate_public_ipv4 = true`, apply, complete bootstrap, then switch it back to `false` to avoid the public IPv4 hourly charge.
 
 Scripts:
 
 - `scripts/deploy.sh` runs Terraform for the AWS EC2/S3/CloudFront stack.
-- `scripts/update-code.sh` SSHes into the EC2 builder, pulls the repo, builds `everpublich-cli`, installs it, and starts the sync service.
+- `scripts/update-code.sh` builds `everpublich-cli` locally in Docker by default with `-C target-cpu=sapphirerapids` for the current `m7i-flex.large` EC2 CPU, uploads only that binary to the EC2 builder, installs it, and starts the sync service. Set `EVERPUBLICH_RUSTFLAGS=''` for a portable build, or use `EVERPUBLICH_BUILD_MODE=local` only when the local libc is compatible with the VM.
 - `scripts/show-logs.sh` reads `journalctl` logs for `everpublich-sync.service` over SSH.
 - `scripts/build_pages.py` builds the GitHub Pages artifact into `dist/pages`.
 

@@ -14,7 +14,7 @@ data_volume_size_gb = 20
 btrfs_zstd_level    = 15
 
 # Public IPv4 is disabled by default because AWS charges hourly for it.
-# If cloud-init cannot reach GitHub/rustup/AppImage downloads over IPv6, set this
+# If cloud-init cannot reach GitHub/Zola/AWS CLI downloads over IPv6, set this
 # to true temporarily for bootstrap.
 associate_public_ipv4 = false
 enable_ipv6           = true
@@ -23,8 +23,7 @@ ssh_public_key_path = "~/.ssh/id_ed25519.pub"
 ssh_key_pair_name   = "everpublich-ssh"
 
 # Tighten these after the first deploy.
-allowed_ssh_ipv6_cidrs  = ["::/0"]
-repository_url = "https://github.com/vitaly-zdanevich/everpublich.git"
+allowed_ssh_ipv6_cidrs = ["::/0"]
 
 # Generated user sites are synced to this private S3 bucket and served by CloudFront.
 # Leave empty to derive a globally unique bucket name from account ID and region.
@@ -42,9 +41,15 @@ create_cloudwatch_dashboard              = true
 install_cloudwatch_agent_on_boot         = true
 cloudfront_free_tier_bytes_per_month     = 100000000000
 
-# Download the latest x86_64 Evernote AppImage from Vitaly's repack releases.
-install_evernote_appimage_on_boot = true
-run_evernote_on_boot              = true
+# Production deploys upload a prebuilt everpublich-cli binary, so the VM does
+# not need Rust. Enable only for emergency on-VM builds.
+install_rustup_on_boot = false
+
+# The API/Reeknote path is preferred. Enable these only for the legacy official
+# Evernote desktop-cache fallback.
+install_evernote_gui_deps         = false
+install_evernote_appimage_on_boot = false
+run_evernote_on_boot              = false
 evernote_appimage_repository      = "vitaly-zdanevich/evernote-linux-repackage"
 evernote_appimage_asset_regex     = "^Evernote-v[0-9][0-9.]*-[0-9]+-x86_64\\.AppImage$"
 

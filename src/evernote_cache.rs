@@ -370,6 +370,24 @@ fn api_download_root(sites_dir: &Path) -> PathBuf {
 	sites_dir.join(".evernote-api-resources")
 }
 
+fn existing_user_id_for_api_notebook(
+	app_db: &Connection,
+	notebook_guid: &str,
+	site_slug: &str,
+) -> Result<Option<String>> {
+	app_db
+		.query_row(
+			"select user_id from users
+			 where shared_notebook_guid = ?1 or site_slug = ?2
+			 order by case when shared_notebook_guid = ?1 then 0 else 1 end
+			 limit 1",
+			params![notebook_guid, site_slug],
+			|row| row.get(0),
+		)
+		.optional()
+		.context("failed to find existing user row for API notebook")
+}
+
 fn api_notebook_to_site(
 	options: &RebuildOptions,
 	app_db: &Connection,
@@ -390,9 +408,12 @@ fn api_notebook_to_site(
 		&options.base_domain,
 		options.cloudfront_url.as_deref(),
 	);
+	let user_id =
+		existing_user_id_for_api_notebook(app_db, &notebook.notebook_guid, &settings.subdomain)?
+			.unwrap_or_else(|| format!("evernote-api-{}", slugify(&notebook.notebook_guid)));
 
 	let mut user = UserItem {
-		user_id: format!("evernote-api-{}", slugify(&notebook.notebook_guid)),
+		user_id,
 		registration_date: Utc::now(),
 		evernote_user_id: notebook.owner_username,
 		evernote_access_mode: EvernoteAccessMode::SharedToServiceAccount,
@@ -2602,6 +2623,53 @@ mod tests {
 	}
 
 	#[test]
+	fn api_notebook_reuses_existing_user_by_notebook_guid() {
+		let fixture = CacheFixture::new();
+		let app_db = fixture.app_db();
+		app_db
+			.execute(
+				"insert into users (
+					user_id, site_slug, site_title, registration_date_utc,
+					shared_notebook_guid, shared_notebook_name, home_page_mode
+				) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+				params![
+					"legacy-user",
+					"postgres",
+					"postgres",
+					"2026-07-06T00:00:00Z",
+					"notebook-guid",
+					"postgres",
+					"full_posts",
+				],
+			)
+			.unwrap();
+
+		let site = api_notebook_to_site(
+			&fixture.options(),
+			&app_db,
+			&fixture.sites_dir.join(".evernote-api-resources"),
+			DownloadedLinkedNotebook {
+				share_name: Some("postgres".into()),
+				owner_username: Some("owner".into()),
+				notebook_guid: "notebook-guid".into(),
+				notes: vec![DownloadedNote {
+					note: api_test_note(
+						"note-guid",
+						"API note",
+						"<en-note><div>Hello API</div></en-note>",
+					),
+					tag_names: Vec::new(),
+				}],
+			},
+		)
+		.unwrap()
+		.unwrap();
+
+		assert_eq!(site.user.user_id, "legacy-user");
+		assert_eq!(site.user.settings.subdomain, "postgres");
+	}
+
+	#[test]
 	fn skips_attachment_when_cache_binary_is_missing() {
 		let fixture = CacheFixture::new();
 
@@ -3076,6 +3144,29 @@ mod tests {
 		assert!(enml.contains("<div>Body</div>"));
 		assert!(!enml.contains("slug:body"));
 		assert!(enml.contains(r#"<en-media type="audio/mpeg" hash="abc123"/>"#));
+	}
+
+	fn api_test_note(guid: &str, title: &str, content: &str) -> edam_types::Note {
+		edam_types::Note {
+			guid: Some(guid.into()),
+			title: Some(title.into()),
+			content: Some(content.into()),
+			content_hash: None,
+			content_length: None,
+			created: Some(1_700_000_000_000),
+			updated: Some(1_700_000_100_000),
+			deleted: None,
+			active: Some(true),
+			update_sequence_num: None,
+			notebook_guid: Some("notebook-guid".into()),
+			tag_guids: None,
+			resources: None,
+			attributes: None,
+			tag_names: None,
+			shared_notes: None,
+			restrictions: None,
+			limits: None,
+		}
 	}
 
 	struct CacheFixture {
