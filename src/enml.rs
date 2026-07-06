@@ -8,13 +8,51 @@
 use crate::models::Resource;
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use regex::{Captures, Regex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Attachment rendering options parsed from an `everpublich:config` note.
+#[derive(Debug, Clone, Copy)]
+pub struct EnmlRenderOptions<'a> {
+	/// Whether attachment previews are rendered at all.
+	pub previews_enabled: bool,
+	/// Lowercase file names whose previews should be disabled.
+	pub disabled_preview_files: &'a HashSet<String>,
+}
+
+impl Default for EnmlRenderOptions<'_> {
+	fn default() -> Self {
+		Self {
+			previews_enabled: true,
+			disabled_preview_files: empty_disabled_preview_files(),
+		}
+	}
+}
+
+fn empty_disabled_preview_files() -> &'static HashSet<String> {
+	static FILES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+	FILES.get_or_init(HashSet::new)
+}
 
 /// Convert an Evernote ENML document into Zola body HTML/shortcodes.
 pub fn enml_to_zola_body(
 	enml: &str,
 	resources: &[Resource],
 	note_slug_by_guid: &HashMap<String, String>,
+) -> String {
+	enml_to_zola_body_with_options(
+		enml,
+		resources,
+		note_slug_by_guid,
+		&EnmlRenderOptions::default(),
+	)
+}
+
+/// Convert an Evernote ENML document with notebook-level render options.
+pub fn enml_to_zola_body_with_options(
+	enml: &str,
+	resources: &[Resource],
+	note_slug_by_guid: &HashMap<String, String>,
+	options: &EnmlRenderOptions<'_>,
 ) -> String {
 	let by_hash = resources
 		.iter()
@@ -45,43 +83,231 @@ pub fn enml_to_zola_body(
 	out = Regex::new(r#"(?is)<en-media\b([^>]*)/?>"#)
 		.unwrap()
 		.replace_all(&out, |caps: &Captures| {
-			media_replacement(caps.get(1).map(|m| m.as_str()).unwrap_or(""), &by_hash)
+			media_replacement(
+				caps.get(1).map(|m| m.as_str()).unwrap_or(""),
+				&by_hash,
+				options,
+			)
 		})
 		.into_owned();
+
+	out = normalize_evernote_rich_blocks(&out);
 
 	rewrite_internal_links(&out, note_slug_by_guid)
 }
 
-fn media_replacement(attrs: &str, by_hash: &HashMap<String, &Resource>) -> String {
+/// Convert Evernote desktop rich blocks that are stored as CSS custom
+/// properties into semantic HTML understood by browsers.
+fn normalize_evernote_rich_blocks(html: &str) -> String {
+	let out = convert_evernote_todo_lists(html);
+	let out = convert_evernote_toggles(&out);
+	convert_evernote_callouts(&out)
+}
+
+/// Render Evernote task lists as disabled browser checkboxes.
+fn convert_evernote_todo_lists(html: &str) -> String {
+	let list = Regex::new(r#"(?is)<ul\b(?P<attrs>[^>]*)>(?P<body>.*?)</ul>"#).unwrap();
+	list.replace_all(html, |caps: &Captures| {
+		let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
+		if evernote_style_value(attrs, "--en-todo").is_none_or(|value| value != "true") {
+			return caps.get(0).unwrap().as_str().to_string();
+		}
+		let body =
+			convert_evernote_todo_items(caps.name("body").map(|m| m.as_str()).unwrap_or_default());
+		format!(r#"<ul class="evernote-todo-list">{body}</ul>"#)
+	})
+	.into_owned()
+}
+
+/// Convert individual Evernote task list items into checkbox labels.
+fn convert_evernote_todo_items(html: &str) -> String {
+	let item = Regex::new(r#"(?is)<li\b(?P<attrs>[^>]*)>(?P<body>.*?)</li>"#).unwrap();
+	item.replace_all(html, |caps: &Captures| {
+		let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
+		let mut checked =
+			evernote_style_value(attrs, "--en-checked").is_some_and(|value| value == "true");
+		let mut body = caps.name("body").map(|m| m.as_str()).unwrap_or_default();
+		if let Some((div_attrs, div_body)) = unwrap_single_div(body) {
+			checked |=
+				evernote_style_value(div_attrs, "--en-checked").is_some_and(|value| value == "true");
+			body = div_body;
+		}
+		let checked_attr = if checked { " checked" } else { "" };
+		format!(
+			r#"<li class="evernote-todo-item"><label><input type="checkbox"{checked_attr} disabled> <span>{body}</span></label></li>"#
+		)
+	})
+	.into_owned()
+}
+
+/// Render Evernote toggles as native disclosure widgets.
+fn convert_evernote_toggles(html: &str) -> String {
+	let toggle = Regex::new(
+		r#"(?is)<div\b(?P<attrs>[^>]*--en-toggle\s*:\s*true[^>]*)>\s*<div\b(?P<summary_attrs>[^>]*--en-toggleSummary\s*:\s*true[^>]*)>(?P<summary>.*?)</div>\s*<div\b(?P<content_attrs>[^>]*--en-toggleContent\s*:\s*true[^>]*)>(?P<content>(?:\s*<div\b[^>]*>.*?</div>\s*)+)</div>\s*</div>"#,
+	)
+	.unwrap();
+	toggle
+		.replace_all(html, |caps: &Captures| {
+			let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
+			let open = evernote_style_value(attrs, "--en-isCollapsed")
+				.is_none_or(|value| value != "true");
+			let open_attr = if open { " open" } else { "" };
+			let summary = caps.name("summary").map(|m| m.as_str()).unwrap_or_default();
+			let content = caps.name("content").map(|m| m.as_str()).unwrap_or_default();
+			format!(
+				r#"<details class="evernote-toggle"{open_attr}><summary>{summary}</summary><div class="evernote-toggle__content">{content}</div></details>"#
+			)
+		})
+		.into_owned()
+}
+
+/// Render Evernote callouts with their emoji marker and content panel.
+fn convert_evernote_callouts(html: &str) -> String {
+	let callout = Regex::new(
+		r#"(?is)<div\b(?P<attrs>[^>]*--en-callout\s*:\s*true[^>]*)>\s*<div\b[^>]*>(?P<body>.*?)</div>\s*</div>"#,
+	)
+	.unwrap();
+	callout
+		.replace_all(html, |caps: &Captures| {
+			let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
+			let emoji = evernote_style_value(attrs, "--en-emoji")
+				.filter(|emoji| !emoji.trim().is_empty())
+				.map(|emoji| {
+					format!(
+						r#"<span class="evernote-callout__emoji" aria-hidden="true">{}</span>"#,
+						encode_text(&emoji)
+					)
+				})
+				.unwrap_or_default();
+			let body = caps.name("body").map(|m| m.as_str()).unwrap_or_default();
+			format!(
+				r#"<aside class="evernote-callout">{emoji}<div class="evernote-callout__body">{body}</div></aside>"#
+			)
+		})
+		.into_owned()
+}
+
+/// Return the body and attributes for an HTML fragment that is one wrapping div.
+fn unwrap_single_div(html: &str) -> Option<(&str, &str)> {
+	let div = Regex::new(r#"(?is)^\s*<div\b(?P<attrs>[^>]*)>(?P<body>.*?)</div>\s*$"#).unwrap();
+	let caps = div.captures(html)?;
+	Some((
+		caps.name("attrs").map(|m| m.as_str()).unwrap_or_default(),
+		caps.name("body").map(|m| m.as_str()).unwrap_or_default(),
+	))
+}
+
+/// Read one Evernote CSS custom property from an element's attribute text.
+fn evernote_style_value(attrs: &str, property: &str) -> Option<String> {
+	let style = style_attr(attrs)?;
+	style.split(';').find_map(|declaration| {
+		let (name, value) = declaration.split_once(':')?;
+		if name.trim().eq_ignore_ascii_case(property) {
+			Some(value.trim().trim_matches('"').to_string())
+		} else {
+			None
+		}
+	})
+}
+
+/// Extract a `style` attribute from double-quoted, single-quoted, or compact
+/// unquoted HTML attributes produced by the Evernote cache serializer.
+fn style_attr(attrs: &str) -> Option<String> {
+	let style = Regex::new(r#"(?is)\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap();
+	let caps = style.captures(attrs)?;
+	caps.get(1)
+		.or_else(|| caps.get(2))
+		.or_else(|| caps.get(3))
+		.map(|m| m.as_str().to_string())
+}
+
+fn media_replacement(
+	attrs: &str,
+	by_hash: &HashMap<String, &Resource>,
+	options: &EnmlRenderOptions<'_>,
+) -> String {
 	let hash = attr(attrs, "hash").unwrap_or_default().to_ascii_lowercase();
-	let mime = attr(attrs, "type").unwrap_or_default();
+	let source_mime = attr(attrs, "type").unwrap_or_default();
 	let Some(resource) = by_hash.get(&hash) else {
 		return format!(
 			r#"<span class="missing-resource">Missing Evernote resource {}</span>"#,
 			encode_text(&hash)
 		);
 	};
+	let mime = if resource.mime.trim().is_empty() {
+		source_mime.as_str()
+	} else {
+		resource.mime.as_str()
+	};
+	if preview_disabled(resource, options) {
+		return attachment_download_link(
+			resource
+				.original_file_name
+				.as_deref()
+				.unwrap_or(&resource.file_name),
+		);
+	}
 	let file = encode_double_quoted_attribute(&resource.file_name);
 
 	if mime.starts_with("image/") {
-		format!(r#"<img src="{file}" alt="" loading="lazy">"#)
+		if let Some(original_file_name) = &resource.original_file_name {
+			let original = encode_double_quoted_attribute(original_file_name);
+			let title = encode_text(original_file_name);
+			format!(
+				r#"<figure class="attachment-preview-image"><img src="{file}" alt="" loading="lazy"><figcaption><a class="attachment" href="{original}" download>Download original {title}</a></figcaption></figure>"#
+			)
+		} else {
+			format!(r#"<img src="{file}" alt="" loading="lazy">"#)
+		}
+	} else if is_midi(resource, mime) {
+		format!(
+			r#"{{{{ midi_player(src="{}", label="{}") }}}}"#,
+			shortcode_arg(&resource.file_name),
+			shortcode_arg(&resource.file_name)
+		)
 	} else if mime.starts_with("audio/") {
 		format!(r#"{{{{ audio(src="{file}") }}}}"#)
 	} else if mime.starts_with("video/") {
 		format!(r#"{{{{ video(src="{file}") }}}}"#)
-	} else if is_gltf_model(resource, &mime) {
+	} else if is_swf(resource, mime) {
+		format!(
+			r#"{{{{ ruffle(src="{}", label="{}") }}}}"#,
+			shortcode_arg(&resource.file_name),
+			shortcode_arg(&resource.file_name)
+		)
+	} else if is_epub(resource, mime) {
+		format!(
+			r#"{{{{ epub_viewer(src="{}", label="{}") }}}}"#,
+			shortcode_arg(&resource.file_name),
+			shortcode_arg(&resource.file_name)
+		)
+	} else if let Some(kind) = comic_book_kind(resource, mime) {
+		format!(
+			r#"{{{{ comic_viewer(src="{}", kind="{}", label="{}") }}}}"#,
+			shortcode_arg(&resource.file_name),
+			kind,
+			shortcode_arg(&resource.file_name)
+		)
+	} else if is_font(resource, mime) {
+		format!(
+			r#"{{{{ font_preview(src="{}", label="{}", family="everpublich-font-{}") }}}}"#,
+			shortcode_arg(&resource.file_name),
+			shortcode_arg(&resource.file_name),
+			shortcode_arg(&resource.hash)
+		)
+	} else if is_gltf_model(resource, mime) {
 		format!(
 			r#"{{{{ model_viewer(src="{}", alt="{}") }}}}"#,
 			shortcode_arg(&resource.file_name),
 			shortcode_arg(&resource.file_name)
 		)
-	} else if is_stl_model(resource, &mime) {
+	} else if is_stl_model(resource, mime) {
 		format!(
 			r#"{{{{ stl_viewer(src="{}", label="{}") }}}}"#,
 			shortcode_arg(&resource.file_name),
 			shortcode_arg(&resource.file_name)
 		)
-	} else if let Some(kind) = model_viewer_kind(resource, &mime) {
+	} else if let Some(kind) = model_viewer_kind(resource, mime) {
 		format!(
 			r#"{{{{ three_model_viewer(src="{}", kind="{}", label="{}") }}}}"#,
 			shortcode_arg(&resource.file_name),
@@ -94,7 +320,7 @@ fn media_replacement(attrs: &str, by_hash: &HashMap<String, &Resource>) -> Strin
 			r#"<details class="attachment-preview attachment-preview-archive"><summary>{title}</summary><pre>{}</pre><p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#,
 			preview_pre_text(tree)
 		)
-	} else if is_text_preview(resource, &mime) {
+	} else if is_text_preview(resource, mime) {
 		let title = encode_text(&resource.file_name);
 		let body = resource
 			.text_preview
@@ -107,10 +333,82 @@ fn media_replacement(attrs: &str, by_hash: &HashMap<String, &Resource>) -> Strin
 			r#"<details class="attachment-preview attachment-preview-text"><summary>{title}</summary>{body}<p><a class="attachment" href="{file}" download>Download {title}</a></p></details>"#
 		)
 	} else {
-		format!(
-			r#"<a class="attachment" href="{file}" download>{}</a>"#,
-			encode_text(&resource.file_name)
-		)
+		attachment_download_link(&resource.file_name)
+	}
+}
+
+fn preview_disabled(resource: &Resource, options: &EnmlRenderOptions<'_>) -> bool {
+	!options.previews_enabled
+		|| options
+			.disabled_preview_files
+			.contains(&resource.file_name.to_ascii_lowercase())
+		|| resource
+			.original_file_name
+			.as_ref()
+			.is_some_and(|file_name| {
+				options
+					.disabled_preview_files
+					.contains(&file_name.to_ascii_lowercase())
+			})
+}
+
+fn attachment_download_link(file_name: &str) -> String {
+	let file = encode_double_quoted_attribute(file_name);
+	format!(
+		r#"<a class="attachment" href="{file}" download>{}</a>"#,
+		encode_text(file_name)
+	)
+}
+
+fn is_font(resource: &Resource, mime: &str) -> bool {
+	matches!(
+		mime.to_ascii_lowercase().as_str(),
+		"font/ttf"
+			| "font/otf"
+			| "font/woff"
+			| "font/woff2"
+			| "application/font-sfnt"
+			| "application/font-woff"
+			| "application/x-font-ttf"
+			| "application/x-font-otf"
+			| "application/x-font-woff"
+			| "application/vnd.ms-fontobject"
+	) || matches!(
+		file_extension(&resource.file_name).as_deref(),
+		Some("ttf" | "otf" | "woff" | "woff2" | "eot")
+	)
+}
+
+fn is_swf(resource: &Resource, mime: &str) -> bool {
+	matches!(
+		mime.to_ascii_lowercase().as_str(),
+		"application/x-shockwave-flash" | "application/vnd.adobe.flash.movie"
+	) || file_extension(&resource.file_name).as_deref() == Some("swf")
+}
+
+fn is_midi(resource: &Resource, mime: &str) -> bool {
+	matches!(
+		mime.to_ascii_lowercase().as_str(),
+		"audio/midi" | "audio/x-midi" | "audio/mid" | "audio/x-mid" | "application/x-midi"
+	) || matches!(
+		file_extension(&resource.file_name).as_deref(),
+		Some("mid" | "midi" | "kar")
+	)
+}
+
+fn is_epub(resource: &Resource, mime: &str) -> bool {
+	mime.eq_ignore_ascii_case("application/epub+zip")
+		|| file_extension(&resource.file_name).as_deref() == Some("epub")
+}
+
+fn comic_book_kind(resource: &Resource, mime: &str) -> Option<&'static str> {
+	let extension = file_extension(&resource.file_name)?;
+	match extension.as_str() {
+		"cbz" => Some("cbz"),
+		"cbr" => Some("cbr"),
+		_ if mime.eq_ignore_ascii_case("application/vnd.comicbook+zip") => Some("cbz"),
+		_ if mime.eq_ignore_ascii_case("application/vnd.comicbook-rar") => Some("cbr"),
+		_ => None,
 	}
 }
 
@@ -253,6 +551,7 @@ mod tests {
 		let resources = vec![Resource {
 			hash: "abc".into(),
 			file_name: "voice.mp3".into(),
+			original_file_name: None,
 			mime: "audio/mpeg".into(),
 			s3_key: None,
 			text_preview: None,
@@ -280,6 +579,42 @@ mod tests {
 	}
 
 	#[test]
+	fn converts_evernote_rich_todos_toggles_and_callouts() {
+		let body = enml_to_zola_body(
+			r#"<en-note><ul style="--en-todo:true"><li style="--en-checked:false"><div>This in unckecked</div></li><li style="--en-checked:true"><div>This is checked</div></li></ul><div style="--en-toggle:true; --en-isCollapsed:false;--en-requiredFeatures:&quot;[&bsol;&quot;toggle&bsol;&quot;]&quot;"><div style="--en-toggleSummary:true">This is the name of my toggle</div><div style="--en-toggleContent:true"><div>This is inside my toggle</div></div></div><div style="--en-callout:true; --en-emoji:💡;--en-requiredFeatures:&quot;[&bsol;&quot;callout&bsol;&quot;]&quot;"><div>This is my callout example</div></div></en-note>"#,
+			&[],
+			&HashMap::new(),
+		);
+
+		assert!(body.contains(r#"<ul class="evernote-todo-list">"#));
+		assert!(
+			body.contains(r#"<input type="checkbox" disabled> <span>This in unckecked</span>"#)
+		);
+		assert!(
+			body.contains(
+				r#"<input type="checkbox" checked disabled> <span>This is checked</span>"#
+			)
+		);
+		assert!(body.contains(r#"<details class="evernote-toggle" open>"#));
+		assert!(body.contains("<summary>This is the name of my toggle</summary>"));
+		assert!(
+			body.contains(
+				r#"<div class="evernote-toggle__content"><div>This is inside my toggle</div></div>"#
+			),
+			"{body}"
+		);
+		assert!(body.contains(r#"<aside class="evernote-callout">"#));
+		assert!(
+			body.contains(r#"<span class="evernote-callout__emoji" aria-hidden="true">💡</span>"#)
+		);
+		assert!(
+			body.contains(
+				r#"<div class="evernote-callout__body">This is my callout example</div>"#
+			)
+		);
+	}
+
+	#[test]
 	fn rewrites_internal_evernote_links() {
 		let mut index = HashMap::new();
 		index.insert(
@@ -299,6 +634,7 @@ mod tests {
 			Resource {
 				hash: "txt".into(),
 				file_name: "notes.md".into(),
+				original_file_name: None,
 				mime: "text/markdown".into(),
 				s3_key: None,
 				text_preview: Some("# Notes\n\nHello".into()),
@@ -307,6 +643,7 @@ mod tests {
 			Resource {
 				hash: "glb".into(),
 				file_name: "shape.glb".into(),
+				original_file_name: None,
 				mime: "model/gltf-binary".into(),
 				s3_key: None,
 				text_preview: None,
@@ -315,6 +652,7 @@ mod tests {
 			Resource {
 				hash: "stl".into(),
 				file_name: "mesh.stl".into(),
+				original_file_name: None,
 				mime: "model/stl".into(),
 				s3_key: None,
 				text_preview: None,
@@ -339,6 +677,7 @@ mod tests {
 			Resource {
 				hash: "zip".into(),
 				file_name: "archive.zip".into(),
+				original_file_name: None,
 				mime: "application/zip".into(),
 				s3_key: None,
 				text_preview: None,
@@ -347,6 +686,7 @@ mod tests {
 			Resource {
 				hash: "sub".into(),
 				file_name: "movie.srt".into(),
+				original_file_name: None,
 				mime: "application/x-subrip".into(),
 				s3_key: None,
 				text_preview: Some("1\n00:00:00,000 --> 00:00:02,000\nHello".into()),
@@ -355,6 +695,7 @@ mod tests {
 			Resource {
 				hash: "obj".into(),
 				file_name: "mesh.obj".into(),
+				original_file_name: None,
 				mime: "model/obj".into(),
 				s3_key: None,
 				text_preview: None,
@@ -377,6 +718,133 @@ mod tests {
 			body.contains(
 				r#"{{ three_model_viewer(src="mesh.obj", kind="obj", label="mesh.obj") }}"#
 			)
+		);
+	}
+
+	#[test]
+	fn renders_swf_with_ruffle_shortcode() {
+		let resources = vec![Resource {
+			hash: "flash".into(),
+			file_name: "animation.swf".into(),
+			original_file_name: None,
+			mime: "application/x-shockwave-flash".into(),
+			s3_key: None,
+			text_preview: None,
+			archive_tree: None,
+		}];
+		let body = enml_to_zola_body(
+			r#"<en-note><en-media type="application/x-shockwave-flash" hash="flash"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+		);
+
+		assert!(body.contains(r#"{{ ruffle(src="animation.swf", label="animation.swf") }}"#));
+	}
+
+	#[test]
+	fn renders_midi_books_comics_and_fonts_with_viewer_shortcodes() {
+		let resources = vec![
+			Resource {
+				hash: "midi".into(),
+				file_name: "song.mid".into(),
+				original_file_name: None,
+				mime: "audio/midi".into(),
+				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
+			},
+			Resource {
+				hash: "epub".into(),
+				file_name: "book.epub".into(),
+				original_file_name: None,
+				mime: "application/epub+zip".into(),
+				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
+			},
+			Resource {
+				hash: "cbz".into(),
+				file_name: "comic.cbz".into(),
+				original_file_name: None,
+				mime: "application/vnd.comicbook+zip".into(),
+				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
+			},
+			Resource {
+				hash: "font".into(),
+				file_name: "letters.woff2".into(),
+				original_file_name: None,
+				mime: "font/woff2".into(),
+				s3_key: None,
+				text_preview: None,
+				archive_tree: None,
+			},
+		];
+		let body = enml_to_zola_body(
+			r#"<en-note><en-media type="audio/midi" hash="midi"/><en-media type="application/epub+zip" hash="epub"/><en-media type="application/vnd.comicbook+zip" hash="cbz"/><en-media type="font/woff2" hash="font"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+		);
+
+		assert!(body.contains(r#"{{ midi_player(src="song.mid", label="song.mid") }}"#));
+		assert!(body.contains(r#"{{ epub_viewer(src="book.epub", label="book.epub") }}"#));
+		assert!(
+			body.contains(r#"{{ comic_viewer(src="comic.cbz", kind="cbz", label="comic.cbz") }}"#)
+		);
+		assert!(body.contains(
+			r#"{{ font_preview(src="letters.woff2", label="letters.woff2", family="everpublich-font-font") }}"#
+		));
+	}
+
+	#[test]
+	fn renders_generated_preview_with_original_download() {
+		let resources = vec![Resource {
+			hash: "ai".into(),
+			file_name: "poster.avif".into(),
+			original_file_name: Some("poster.ai".into()),
+			mime: "image/avif".into(),
+			s3_key: None,
+			text_preview: None,
+			archive_tree: None,
+		}];
+		let body = enml_to_zola_body(
+			r#"<en-note><en-media type="application/illustrator" hash="ai"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+		);
+
+		assert!(body.contains(r#"<img src="poster.avif" alt="" loading="lazy">"#));
+		assert!(body.contains(r#"href="poster.ai" download"#));
+		assert!(body.contains("Download original poster.ai"));
+	}
+
+	#[test]
+	fn can_disable_generated_attachment_preview_by_file() {
+		let mut disabled = HashSet::new();
+		disabled.insert("poster.ai".to_string());
+		let resources = vec![Resource {
+			hash: "ai".into(),
+			file_name: "poster.avif".into(),
+			original_file_name: Some("poster.ai".into()),
+			mime: "image/avif".into(),
+			s3_key: None,
+			text_preview: None,
+			archive_tree: None,
+		}];
+		let body = enml_to_zola_body_with_options(
+			r#"<en-note><en-media type="application/illustrator" hash="ai"/></en-note>"#,
+			&resources,
+			&HashMap::new(),
+			&EnmlRenderOptions {
+				previews_enabled: true,
+				disabled_preview_files: &disabled,
+			},
+		);
+
+		assert_eq!(
+			body,
+			r#"<a class="attachment" href="poster.ai" download>poster.ai</a>"#
 		);
 	}
 }

@@ -78,6 +78,24 @@ fn zola_build_renders_public_html() {
 	);
 	assert_contains(&style, ".embed-soundcloud iframe{height:400px}");
 	assert_contains(&style, ".embed-direct-media video{width:100%}");
+	assert_contains(&style, ".attachment-preview-image{");
+	assert_contains(&style, ".embed-ruffle ruffle-player{");
+	assert_contains(
+		&style,
+		".embed-midi midi-player,.embed-midi midi-visualizer{",
+	);
+	assert_contains(&style, ".epub-viewer__frame{");
+	assert_contains(&style, ".comic-viewer__pages{");
+	assert_contains(&style, ".font-preview__sample{");
+	assert_contains(&style, ".evernote-todo-list{");
+	assert_contains(
+		&style,
+		".evernote-todo-item input{accent-color:var(--accent)}",
+	);
+	assert_contains(&style, ".evernote-toggle{");
+	assert_contains(&style, ".evernote-toggle__content{");
+	assert_contains(&style, ".evernote-callout{");
+	assert_contains(&style, ".evernote-callout__emoji{");
 	assert_contains(
 		&style,
 		".embed-3d model-viewer,.stl-viewer__canvas,.three-model-viewer__canvas{",
@@ -146,12 +164,26 @@ fn zola_build_renders_public_html() {
 	assert_contains(&first_post, "title=22:13:20");
 	assert_contains(&first_post, "href=/posts/linked-note/");
 	assert_contains(&first_post, "class=internal-link");
+	assert_contains(&first_post, "class=evernote-todo-list");
+	assert_contains(&first_post, "This in unckecked");
+	assert_contains(&first_post, "<input disabled type=checkbox>");
+	assert_contains(&first_post, "<input checked disabled type=checkbox>");
+	assert_contains(&first_post, "<details class=evernote-toggle open>");
+	assert_contains(
+		&first_post,
+		"<summary>This is the name of my toggle</summary>",
+	);
+	assert_contains(&first_post, "This is inside my toggle");
+	assert_contains(&first_post, "</details><aside class=evernote-callout>");
+	assert_contains(&first_post, "class=evernote-callout");
+	assert_contains(&first_post, "This is my callout example");
 	assert_contains(&first_post, "src=photo.jpg");
 	assert_contains(&first_post, "href=archive.pdf");
 	assert_not_contains(&first_post, "model-viewer.min.js");
 	assert_not_contains(&first_post, "stl-viewer.js");
 	assert_not_contains(&first_post, "three-model-viewer.js");
 	assert_not_contains(&first_post, "cdn.jsdelivr.net/npm/three");
+	assert_not_contains(&first_post, "ruffle-rs/ruffle");
 	assert_contains(&first_post, "post-nav");
 	assert_contains(&first_post, "accesskey=o");
 	assert_contains(&first_post, "aria-keyshortcuts=Alt+Shift+O");
@@ -175,6 +207,20 @@ fn zola_build_renders_public_html() {
 	assert_contains(&media_post, "episode.mp3");
 	assert_contains(&media_post, "<video controls");
 	assert_contains(&media_post, "clip.mp4");
+	assert_contains(&media_post, "<ruffle-player");
+	assert_contains(&media_post, "animation.swf");
+	assert_contains(&media_post, "ruffle-rs/ruffle");
+	assert_contains(&media_post, "<midi-player");
+	assert_contains(&media_post, "song.mid");
+	assert_contains(&media_post, "html-midi-player");
+	assert_contains(&media_post, "book.epub");
+	assert_contains(&media_post, "epubjs");
+	assert_contains(&media_post, "comic.cbz");
+	assert_contains(&media_post, "jszip");
+	assert_contains(&media_post, "letters.woff2");
+	assert_contains(&media_post, "font-preview__sample");
+	assert_contains(&media_post, "poster.avif");
+	assert_contains(&media_post, "Download original poster.ai");
 	assert_contains(&media_post, "<model-viewer");
 	assert_contains(&media_post, "shape.glb");
 	assert_contains(&media_post, "model-viewer.min.js");
@@ -443,11 +489,12 @@ fn note_fixtures() -> Vec<Note> {
 			created: utc(1_700_000_000),
 			updated: utc(1_700_000_100),
 			tags: vec!["intro".into()],
-			enml: r#"<en-note><p><span style="font-size: 20px; color: #207a4d">Rich ENML formatting is preserved.</span></p><p><a href="evernote:///view/1/s1/22222222-2222-2222-2222-222222222222/22222222-2222-2222-2222-222222222222/">Linked note</a></p><p>https://youtu.be/dQw4w9WgXcQ</p><en-media type="image/jpeg" hash="img"/><en-media type="application/pdf" hash="pdf"/></en-note>"#.into(),
+			enml: r#"<en-note><p><span style="font-size: 20px; color: #207a4d">Rich ENML formatting is preserved.</span></p><p><a href="evernote:///view/1/s1/22222222-2222-2222-2222-222222222222/22222222-2222-2222-2222-222222222222/">Linked note</a></p><ul style="--en-todo:true"><li style="--en-checked:false"><div>This in unckecked</div></li><li style="--en-checked:true"><div>This is checked</div></li></ul><div style="--en-toggle:true; --en-isCollapsed:false;--en-requiredFeatures:&quot;[&bsol;&quot;toggle&bsol;&quot;]&quot;"><div style="--en-toggleSummary:true">This is the name of my toggle</div><div style="--en-toggleContent:true"><div>This is inside my toggle</div></div></div><div style="--en-callout:true; --en-emoji:💡;--en-requiredFeatures:&quot;[&bsol;&quot;callout&bsol;&quot;]&quot;"><div>This is my callout example</div></div><p>https://youtu.be/dQw4w9WgXcQ</p><en-media type="image/jpeg" hash="img"/><en-media type="application/pdf" hash="pdf"/></en-note>"#.into(),
 			resources: vec![
 				Resource {
 					hash: "img".into(),
 					file_name: "photo.jpg".into(),
+					original_file_name: None,
 					mime: "image/jpeg".into(),
 					s3_key: None,
 					text_preview: None,
@@ -456,6 +503,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "pdf".into(),
 					file_name: "archive.pdf".into(),
+					original_file_name: None,
 					mime: "application/pdf".into(),
 					s3_key: None,
 					text_preview: None,
@@ -478,11 +526,12 @@ fn note_fixtures() -> Vec<Note> {
 			created: utc(1_700_172_800),
 			updated: utc(1_700_172_900),
 			tags: vec!["podcast".into(), "media".into()],
-			enml: r#"<en-note><p>Audio and video stay playable.</p><en-media type="audio/mpeg" hash="audio"/><en-media type="video/mp4" hash="video"/><en-media type="model/gltf-binary" hash="glb"/><en-media type="model/stl" hash="stl"/><en-media type="model/obj" hash="obj"/><en-media type="text/markdown" hash="text"/><en-media type="application/x-subrip" hash="sub"/><en-media type="text/plain" hash="log"/><en-media type="text/csv" hash="csv"/><en-media type="application/json" hash="json"/><en-media type="application/yaml" hash="yaml"/><en-media type="application/xml" hash="xml"/><en-media type="application/zip" hash="zip"/></en-note>"#.into(),
+			enml: r#"<en-note><p>Audio and video stay playable.</p><en-media type="audio/mpeg" hash="audio"/><en-media type="video/mp4" hash="video"/><en-media type="application/x-shockwave-flash" hash="swf"/><en-media type="audio/midi" hash="midi"/><en-media type="application/epub+zip" hash="epub"/><en-media type="application/vnd.comicbook+zip" hash="cbz"/><en-media type="font/woff2" hash="font"/><en-media type="application/illustrator" hash="ai"/><en-media type="model/gltf-binary" hash="glb"/><en-media type="model/stl" hash="stl"/><en-media type="model/obj" hash="obj"/><en-media type="text/markdown" hash="text"/><en-media type="application/x-subrip" hash="sub"/><en-media type="text/plain" hash="log"/><en-media type="text/csv" hash="csv"/><en-media type="application/json" hash="json"/><en-media type="application/yaml" hash="yaml"/><en-media type="application/xml" hash="xml"/><en-media type="application/zip" hash="zip"/></en-note>"#.into(),
 			resources: vec![
 				Resource {
 					hash: "audio".into(),
 					file_name: "episode.mp3".into(),
+					original_file_name: None,
 					mime: "audio/mpeg".into(),
 					s3_key: None,
 					text_preview: None,
@@ -491,7 +540,62 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "video".into(),
 					file_name: "clip.mp4".into(),
+					original_file_name: None,
 					mime: "video/mp4".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "swf".into(),
+					file_name: "animation.swf".into(),
+					original_file_name: None,
+					mime: "application/x-shockwave-flash".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "midi".into(),
+					file_name: "song.mid".into(),
+					original_file_name: None,
+					mime: "audio/midi".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "epub".into(),
+					file_name: "book.epub".into(),
+					original_file_name: None,
+					mime: "application/epub+zip".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "cbz".into(),
+					file_name: "comic.cbz".into(),
+					original_file_name: None,
+					mime: "application/vnd.comicbook+zip".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "font".into(),
+					file_name: "letters.woff2".into(),
+					original_file_name: None,
+					mime: "font/woff2".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				},
+				Resource {
+					hash: "ai".into(),
+					file_name: "poster.avif".into(),
+					original_file_name: Some("poster.ai".into()),
+					mime: "image/avif".into(),
 					s3_key: None,
 					text_preview: None,
 					archive_tree: None,
@@ -499,6 +603,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "glb".into(),
 					file_name: "shape.glb".into(),
+					original_file_name: None,
 					mime: "model/gltf-binary".into(),
 					s3_key: None,
 					text_preview: None,
@@ -507,6 +612,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "stl".into(),
 					file_name: "mesh.stl".into(),
+					original_file_name: None,
 					mime: "model/stl".into(),
 					s3_key: None,
 					text_preview: None,
@@ -515,6 +621,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "obj".into(),
 					file_name: "mesh.obj".into(),
+					original_file_name: None,
 					mime: "model/obj".into(),
 					s3_key: None,
 					text_preview: None,
@@ -523,6 +630,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "text".into(),
 					file_name: "notes.md".into(),
+					original_file_name: None,
 					mime: "text/markdown".into(),
 					s3_key: None,
 					text_preview: Some("# Notes\n\nHello".into()),
@@ -531,6 +639,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "sub".into(),
 					file_name: "subtitles.srt".into(),
+					original_file_name: None,
 					mime: "application/x-subrip".into(),
 					s3_key: None,
 					text_preview: Some("1\n00:00:00,000 --> 00:00:02,000\nHello".into()),
@@ -539,6 +648,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "log".into(),
 					file_name: "server.log".into(),
+					original_file_name: None,
 					mime: "text/plain".into(),
 					s3_key: None,
 					text_preview: Some("Started".into()),
@@ -547,6 +657,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "csv".into(),
 					file_name: "data.csv".into(),
+					original_file_name: None,
 					mime: "text/csv".into(),
 					s3_key: None,
 					text_preview: Some("name,value\nok,true".into()),
@@ -555,6 +666,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "json".into(),
 					file_name: "data.json".into(),
+					original_file_name: None,
 					mime: "application/json".into(),
 					s3_key: None,
 					text_preview: Some("{\"ok\": true}".into()),
@@ -563,6 +675,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "yaml".into(),
 					file_name: "data.yaml".into(),
+					original_file_name: None,
 					mime: "application/yaml".into(),
 					s3_key: None,
 					text_preview: Some("ok: true".into()),
@@ -571,6 +684,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "xml".into(),
 					file_name: "data.xml".into(),
+					original_file_name: None,
 					mime: "application/xml".into(),
 					s3_key: None,
 					text_preview: Some("<ok>true</ok>".into()),
@@ -579,6 +693,7 @@ fn note_fixtures() -> Vec<Note> {
 				Resource {
 					hash: "zip".into(),
 					file_name: "archive.zip".into(),
+					original_file_name: None,
 					mime: "application/zip".into(),
 					s3_key: None,
 					text_preview: None,

@@ -238,6 +238,79 @@ blockquote:not(.instagram-media) > :last-child {
 	margin: 1rem 0;
 }
 
+.evernote-todo-list {
+	list-style: none;
+	margin: 1rem 0;
+	padding-left: 0;
+}
+
+.evernote-todo-item {
+	margin: .25rem 0;
+}
+
+.evernote-todo-item label {
+	display: inline-flex;
+	gap: .45rem;
+	align-items: baseline;
+}
+
+.evernote-todo-item input {
+	accent-color: var(--accent);
+}
+
+.evernote-toggle {
+	margin: 1rem 0;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--panel);
+}
+
+.evernote-toggle summary {
+	cursor: pointer;
+	padding: .6rem .75rem;
+	color: var(--fg);
+}
+
+.evernote-toggle__content {
+	border-top: 1px solid var(--line);
+	padding: .75rem;
+}
+
+.evernote-toggle__content > :first-child {
+	margin-top: 0;
+}
+
+.evernote-toggle__content > :last-child {
+	margin-bottom: 0;
+}
+
+.evernote-callout {
+	display: flex;
+	gap: .65rem;
+	margin: 1rem 0;
+	border: 1px solid var(--line);
+	border-left: 4px solid var(--accent);
+	border-radius: 6px;
+	background: var(--panel);
+	padding: .75rem;
+}
+
+.evernote-callout__emoji {
+	flex: 0 0 auto;
+}
+
+.evernote-callout__body {
+	min-width: 0;
+}
+
+.evernote-callout__body > :first-child {
+	margin-top: 0;
+}
+
+.evernote-callout__body > :last-child {
+	margin-bottom: 0;
+}
+
 .embed iframe {
 	width: 100%;
 	border: 0;
@@ -245,6 +318,52 @@ blockquote:not(.instagram-media) > :last-child {
 
 .embed-direct-media video {
 	width: 100%;
+}
+
+.attachment-preview-image {
+	margin: 1rem 0;
+}
+
+.attachment-preview-image figcaption {
+	margin-top: .35rem;
+	color: var(--muted);
+}
+
+.embed-ruffle ruffle-player {
+	display: block;
+	width: min(100%, 900px);
+	aspect-ratio: 4/3;
+	background: var(--panel);
+}
+
+.embed-midi midi-player,
+.embed-midi midi-visualizer {
+	display: block;
+	width: min(100%, 900px);
+}
+
+.epub-viewer__frame {
+	height: min(70vh, 720px);
+	border-top: 1px solid var(--line);
+}
+
+.comic-viewer__pages {
+	display: grid;
+	gap: 12px;
+	padding: .75rem;
+}
+
+.comic-viewer__pages img {
+	display: block;
+	width: min(100%, 1100px);
+	margin: 0 auto;
+}
+
+.font-preview__sample {
+	margin: 0;
+	font-size: clamp(2rem, 7vw, 4rem);
+	line-height: 1.2;
+	overflow-wrap: anywhere;
 }
 
 .embed-3d {

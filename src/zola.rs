@@ -904,6 +904,23 @@ fn write_templates(root: &Path, notebook_config: &NotebookSiteConfig) -> Result<
 		("templates/tags/single.html", TAGS_SINGLE_HTML),
 		("templates/shortcodes/audio.html", AUDIO_SHORTCODE),
 		("templates/shortcodes/video.html", VIDEO_SHORTCODE),
+		("templates/shortcodes/ruffle.html", RUFFLE_SHORTCODE),
+		(
+			"templates/shortcodes/midi_player.html",
+			MIDI_PLAYER_SHORTCODE,
+		),
+		(
+			"templates/shortcodes/epub_viewer.html",
+			EPUB_VIEWER_SHORTCODE,
+		),
+		(
+			"templates/shortcodes/comic_viewer.html",
+			COMIC_VIEWER_SHORTCODE,
+		),
+		(
+			"templates/shortcodes/font_preview.html",
+			FONT_PREVIEW_SHORTCODE,
+		),
 		(
 			"templates/shortcodes/model_viewer.html",
 			MODEL_VIEWER_SHORTCODE,
@@ -1138,7 +1155,9 @@ fn post_nav_title(post: &Post) -> String {
 
 fn post_plain_text(body: &str) -> String {
 	let without_attachment_previews = attachment_preview_regex().replace_all(body, " ");
-	let with_line_breaks = block_boundary_regex().replace_all(&without_attachment_previews, "\n");
+	let without_attachment_images =
+		attachment_preview_image_regex().replace_all(&without_attachment_previews, " ");
+	let with_line_breaks = block_boundary_regex().replace_all(&without_attachment_images, "\n");
 	let without_shortcodes = shortcode_regex().replace_all(&with_line_breaks, " ");
 	let without_tags = html_tag_regex().replace_all(&without_shortcodes, " ");
 	decode_html_entities(&without_tags)
@@ -1153,6 +1172,14 @@ fn attachment_preview_regex() -> &'static Regex {
 	static REGEX: OnceLock<Regex> = OnceLock::new();
 	REGEX.get_or_init(|| {
 		Regex::new(r#"(?is)<details\b[^>]*class=(?:"[^"]*\battachment-preview\b[^"]*"|'[^']*\battachment-preview\b[^']*')[^>]*>.*?</details>"#)
+			.unwrap()
+	})
+}
+
+fn attachment_preview_image_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| {
+		Regex::new(r#"(?is)<figure\b[^>]*class=(?:"[^"]*\battachment-preview-image\b[^"]*"|'[^']*\battachment-preview-image\b[^']*')[^>]*>.*?</figure>"#)
 			.unwrap()
 	})
 }
@@ -1303,6 +1330,11 @@ const AUDIO_SHORTCODE: &str =
 	r#"<audio controls preload="metadata" src="{{ page.permalink | safe }}{{ src }}"></audio>"#;
 const VIDEO_SHORTCODE: &str =
 	r#"<video controls preload="metadata" src="{{ page.permalink | safe }}{{ src }}"></video>"#;
+const RUFFLE_SHORTCODE: &str = r#"<div class="embed embed-ruffle"><ruffle-player src="{{ page.permalink | safe }}{{ src }}"></ruffle-player><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="Flash file") }}</a></p></div><script src="https://unpkg.com/@ruffle-rs/ruffle"></script>"#;
+const MIDI_PLAYER_SHORTCODE: &str = r##"<div class="embed embed-midi"><midi-player src="{{ page.permalink | safe }}{{ src }}" sound-font visualizer="#midi-visualizer-{{ src | slugify }}"></midi-player><midi-visualizer id="midi-visualizer-{{ src | slugify }}" type="piano-roll"></midi-visualizer><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="MIDI file") }}</a></p></div><script src="https://cdn.jsdelivr.net/combine/npm/tone@14.7.77,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>"##;
+const EPUB_VIEWER_SHORTCODE: &str = r#"<details class="attachment-preview attachment-preview-epub embed-epub" data-src="{{ page.permalink | safe }}{{ src }}"><summary>{{ label | default(value="Read EPUB") }}</summary><div class="epub-viewer__frame"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="EPUB") }}</a></p></details><script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script><script>for(const el of document.querySelectorAll('.embed-epub[data-src]:not([data-ready])')){el.dataset.ready='1';el.addEventListener('toggle',()=>{if(!el.open||el.dataset.loaded)return;el.dataset.loaded='1';const frame=el.querySelector('.epub-viewer__frame');const book=ePub(el.dataset.src);book.renderTo(frame,{width:'100%',height:'60vh'}).display();});}</script>"#;
+const COMIC_VIEWER_SHORTCODE: &str = r#"<details class="attachment-preview attachment-preview-comic embed-comic" data-src="{{ page.permalink | safe }}{{ src }}" data-kind="{{ kind }}"><summary>{{ label | default(value="Read comic") }}</summary><div class="comic-viewer__pages"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="comic") }}</a></p></details><script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script><script src="https://cdn.jsdelivr.net/npm/libarchive.js/dist/libarchive.js"></script><script>const imageExt=/\.(avif|gif|jpe?g|png|webp)$/i;async function everpublichComic(el){if(el.dataset.loaded)return;el.dataset.loaded='1';const out=el.querySelector('.comic-viewer__pages');const response=await fetch(el.dataset.src);const data=await response.arrayBuffer();let files=[];if(el.dataset.kind==='cbz'){const zip=await JSZip.loadAsync(data);for(const name of Object.keys(zip.files).sort()){const file=zip.files[name];if(!file.dir&&imageExt.test(name))files.push([name,await file.async('blob')]);}}else{Archive.init({workerUrl:'https://cdn.jsdelivr.net/npm/libarchive.js/dist/worker-bundle.js'});const archive=await Archive.open(new File([data],'comic.cbr'));const extracted=await archive.extractFiles();for(const name of Object.keys(extracted).sort()){const file=extracted[name];if(imageExt.test(name))files.push([name,file.file]);}}for(const [name,blob] of files){const img=document.createElement('img');img.loading='lazy';img.alt=name;img.src=URL.createObjectURL(blob);out.append(img);}}for(const el of document.querySelectorAll('.embed-comic[data-src]:not([data-ready])')){el.dataset.ready='1';el.addEventListener('toggle',()=>{if(el.open)everpublichComic(el).catch(error=>{el.querySelector('.comic-viewer__pages').textContent=error.message;});});}</script>"#;
+const FONT_PREVIEW_SHORTCODE: &str = r#"<div class="embed font-preview"><style>@font-face{font-family:'{{ family }}';src:url('{{ page.permalink | safe }}{{ src }}')}</style><p class="font-preview__sample" style="font-family:'{{ family }}'">The quick brown fox jumps over the lazy dog. 0123456789</p><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="font") }}</a></p></div>"#;
 const MODEL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-model-viewer"><model-viewer src="{{ page.permalink | safe }}{{ src }}" alt="{{ alt | default(value="3D model") }}" camera-controls touch-action="pan-y" auto-rotate loading="lazy" reveal="interaction"><a href="{{ page.permalink | safe }}{{ src }}" download>Download 3D model</a></model-viewer></div><script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.3.1/model-viewer.min.js"></script>"#;
 const STL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-stl-viewer stl-viewer" data-src="{{ page.permalink | safe }}{{ src }}" data-label="{{ label | default(value="STL model") }}"><div class="stl-viewer__canvas" role="img" aria-label="{{ label | default(value="STL model") }}"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="STL model") }}</a></p></div><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"}}</script><script type="module" src="{{ get_url(path='stl-viewer.js', cachebust=true) | safe }}"></script>"#;
 const THREE_MODEL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-three-model-viewer three-model-viewer" data-src="{{ page.permalink | safe }}{{ src }}" data-kind="{{ kind }}" data-label="{{ label | default(value="3D model") }}"><div class="three-model-viewer__canvas" role="img" aria-label="{{ label | default(value="3D model") }}"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="3D model") }}</a></p></div><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"}}</script><script type="module" src="{{ get_url(path='three-model-viewer.js', cachebust=true) | safe }}"></script>"#;
@@ -1362,6 +1394,7 @@ mod tests {
 			resources: vec![Resource {
 				hash: "abc".into(),
 				file_name: "episode one.mp3".into(),
+				original_file_name: None,
 				mime: "audio/mpeg".into(),
 				s3_key: None,
 				text_preview: None,

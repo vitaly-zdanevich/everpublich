@@ -248,6 +248,9 @@ pub struct Resource {
 	pub hash: String,
 	/// File name written into the Zola page bundle.
 	pub file_name: String,
+	/// Optional original file name when `file_name` points to a generated web preview.
+	#[serde(default)]
+	pub original_file_name: Option<String>,
 	/// Resource MIME type.
 	pub mime: String,
 	/// Optional remote object key after upload or mirroring.

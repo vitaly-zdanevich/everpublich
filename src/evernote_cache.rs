@@ -72,13 +72,26 @@ struct CachedNote {
 #[derive(Debug, Clone)]
 struct CachedResourceFile {
 	file_name: String,
+	original_file_name: Option<String>,
 	source_path: PathBuf,
+	transform: ResourceTransform,
 }
 
 #[derive(Debug, Clone)]
 struct CachedAttachment {
 	resource: Resource,
 	source_path: Option<PathBuf>,
+	transform: ResourceTransform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceTransform {
+	Copy,
+	ImageToAvif,
+	VectorToAvif,
+	DngEmbeddedJpeg,
+	DngToAvif,
+	TrackerToOpus,
 }
 
 #[derive(Debug, Clone)]
@@ -377,8 +390,10 @@ fn read_notes_for_notebook(
 					attachment
 						.source_path
 						.map(|source_path| CachedResourceFile {
-							file_name: attachment.resource.file_name,
+							file_name: attachment.resource.file_name.clone(),
+							original_file_name: attachment.resource.original_file_name.clone(),
 							source_path,
+							transform: attachment.transform,
 						})
 				})
 				.collect();
@@ -449,8 +464,37 @@ fn read_attachments(
 	attachments
 		.into_iter()
 		.map(|(hash, filename, mime)| {
-			let file_name = safe_file_name(&filename, &hash);
+			let original_file_name = safe_file_name(&filename, &hash);
 			let source_path = find_cached_resource_file(config_dir, &hash)?;
+			let transform = resource_transform(&original_file_name, &mime, source_path.as_deref());
+			let file_name = match transform {
+				ResourceTransform::Copy => original_file_name.clone(),
+				ResourceTransform::ImageToAvif
+				| ResourceTransform::VectorToAvif
+				| ResourceTransform::DngToAvif => file_name_with_extension(&original_file_name, &hash, "avif"),
+				ResourceTransform::DngEmbeddedJpeg => {
+					file_name_with_extension(&original_file_name, &hash, "jpg")
+				}
+				ResourceTransform::TrackerToOpus => {
+					file_name_with_extension(&original_file_name, &hash, "opus")
+				}
+			};
+			let resource_mime = match transform {
+				ResourceTransform::ImageToAvif
+				| ResourceTransform::VectorToAvif
+				| ResourceTransform::DngToAvif => "image/avif".to_string(),
+				ResourceTransform::DngEmbeddedJpeg => "image/jpeg".to_string(),
+				ResourceTransform::TrackerToOpus => "audio/opus".to_string(),
+				ResourceTransform::Copy => mime.clone(),
+			};
+			let original_resource_file_name = matches!(
+				transform,
+				ResourceTransform::ImageToAvif
+					| ResourceTransform::VectorToAvif
+					| ResourceTransform::DngEmbeddedJpeg
+					| ResourceTransform::DngToAvif
+			)
+			.then(|| original_file_name.clone());
 			let text_preview = source_path
 				.as_deref()
 				.filter(|_| is_text_like_attachment(&file_name, &mime))
@@ -463,12 +507,14 @@ fn read_attachments(
 				resource: Resource {
 					hash: hash.to_ascii_lowercase(),
 					file_name,
-					mime,
+					original_file_name: original_resource_file_name,
+					mime: resource_mime,
 					s3_key: None,
 					text_preview,
 					archive_tree,
 				},
 				source_path,
+				transform,
 			})
 		})
 		.collect()
@@ -572,6 +618,12 @@ fn file_extension(file_name: &str) -> Option<String> {
 	lower
 		.rsplit_once('.')
 		.map(|(_, extension)| extension.to_string())
+}
+
+fn file_extension_from_path(path: &Path) -> Option<String> {
+	path.file_name()
+		.and_then(|file_name| file_name.to_str())
+		.and_then(file_extension)
 }
 
 fn find_cached_resource_file(config_dir: &Path, hash: &str) -> Result<Option<PathBuf>> {
@@ -994,16 +1046,423 @@ fn copy_resource_files(site_dir: &Path, notes: &[CachedNote], posts: &[Post]) ->
 			PostKind::NavTag | PostKind::Config => continue,
 		};
 		for file in &cached.files {
-			fs::copy(&file.source_path, content_dir.join(&file.file_name)).with_context(|| {
-				format!(
-					"failed to copy {} into {}",
-					file.source_path.display(),
-					content_dir.display()
-				)
-			})?;
+			let destination = content_dir.join(&file.file_name);
+			match file.transform {
+				ResourceTransform::Copy => {
+					fs::copy(&file.source_path, &destination).with_context(|| {
+						format!(
+							"failed to copy {} into {}",
+							file.source_path.display(),
+							content_dir.display()
+						)
+					})?;
+				}
+				ResourceTransform::ImageToAvif | ResourceTransform::DngToAvif => {
+					convert_image_to_avif(&file.source_path, &destination)?;
+				}
+				ResourceTransform::VectorToAvif => {
+					convert_vector_to_avif(&file.source_path, &destination)?;
+				}
+				ResourceTransform::DngEmbeddedJpeg => {
+					extract_embedded_jpeg(&file.source_path, &destination).with_context(|| {
+						format!(
+							"failed to extract embedded JPEG from {}",
+							file.source_path.display()
+						)
+					})?;
+				}
+				ResourceTransform::TrackerToOpus => {
+					convert_audio_to_opus(&file.source_path, &destination)?;
+				}
+			}
+			if let Some(original_file_name) = &file.original_file_name {
+				let original_destination = content_dir.join(original_file_name);
+				fs::copy(&file.source_path, &original_destination).with_context(|| {
+					format!(
+						"failed to copy original {} into {}",
+						file.source_path.display(),
+						content_dir.display()
+					)
+				})?;
+			}
 		}
 	}
 	Ok(())
+}
+
+/// Render an artwork-like vector document to a web-display AVIF preview.
+fn convert_vector_to_avif(source: &Path, destination: &Path) -> Result<()> {
+	let preview = destination.with_file_name(format!(
+		".{}.preview.png",
+		destination
+			.file_name()
+			.and_then(|file_name| file_name.to_str())
+			.unwrap_or("vector")
+	));
+	let mut errors = Vec::new();
+
+	if render_vector_preview(source, &preview, &mut errors)? {
+		let result = convert_image_to_avif(&preview, destination);
+		let _ = fs::remove_file(&preview);
+		return result;
+	}
+
+	bail!(
+		"failed to render vector preview for {}\n{}",
+		source.display(),
+		errors.join("\n")
+	);
+}
+
+fn render_vector_preview(source: &Path, preview: &Path, errors: &mut Vec<String>) -> Result<bool> {
+	let mut attempts = Vec::new();
+	if matches!(
+		file_extension_from_path(source).as_deref(),
+		Some("ai" | "pdf")
+	) {
+		let prefix = preview.with_extension("");
+		attempts.push((
+			"pdftoppm".to_string(),
+			vec![
+				"-png".into(),
+				"-singlefile".into(),
+				"-f".into(),
+				"1".into(),
+				"-l".into(),
+				"1".into(),
+				source.display().to_string(),
+				prefix.display().to_string(),
+			],
+		));
+	}
+	attempts.push((
+		"gs".to_string(),
+		vec![
+			"-dSAFER".into(),
+			"-dBATCH".into(),
+			"-dNOPAUSE".into(),
+			"-dFirstPage=1".into(),
+			"-dLastPage=1".into(),
+			"-sDEVICE=pngalpha".into(),
+			"-r144".into(),
+			format!("-sOutputFile={}", preview.display()),
+			source.display().to_string(),
+		],
+	));
+	for program in ["magick", "convert"] {
+		attempts.push((
+			program.to_string(),
+			vec![
+				format!("{}[0]", source.display()),
+				"-auto-orient".into(),
+				"-background".into(),
+				"white".into(),
+				"-alpha".into(),
+				"remove".into(),
+				preview.display().to_string(),
+			],
+		));
+	}
+
+	for (program, args) in attempts {
+		let output = match Command::new(&program).args(&args).output() {
+			Ok(output) => output,
+			Err(error) => {
+				errors.push(format!("{program} failed to launch: {error}"));
+				continue;
+			}
+		};
+		if output.status.success() && preview.exists() {
+			return Ok(true);
+		}
+		errors.push(format!(
+			"{program} exited with {}: {}",
+			output.status,
+			String::from_utf8_lossy(&output.stderr).trim()
+		));
+	}
+	Ok(false)
+}
+
+/// Convert a tracker module into Opus so every generated site can play it.
+fn convert_audio_to_opus(source: &Path, destination: &Path) -> Result<()> {
+	let output = Command::new("ffmpeg")
+		.arg("-hide_banner")
+		.arg("-loglevel")
+		.arg("error")
+		.arg("-y")
+		.arg("-i")
+		.arg(source)
+		.arg("-c:a")
+		.arg("libopus")
+		.arg("-b:a")
+		.arg("160k")
+		.arg(destination)
+		.output()
+		.with_context(|| format!("failed to execute ffmpeg for {}", source.display()))?;
+	if !output.status.success() {
+		bail!(
+			"ffmpeg failed to convert {} to {}\nstderr:\n{}",
+			source.display(),
+			destination.display(),
+			String::from_utf8_lossy(&output.stderr)
+		);
+	}
+	Ok(())
+}
+
+/// Convert an Evernote browser-hostile image attachment into AVIF.
+fn convert_image_to_avif(source: &Path, destination: &Path) -> Result<()> {
+	let ffmpeg_output = Command::new("ffmpeg")
+		.arg("-hide_banner")
+		.arg("-loglevel")
+		.arg("error")
+		.arg("-y")
+		.arg("-i")
+		.arg(source)
+		.arg("-frames:v")
+		.arg("1")
+		.arg("-c:v")
+		.arg("libaom-av1")
+		.arg("-still-picture")
+		.arg("1")
+		.arg("-crf")
+		.arg("28")
+		.arg("-b:v")
+		.arg("0")
+		.arg(destination)
+		.output()
+		.with_context(|| format!("failed to execute ffmpeg for {}", source.display()))?;
+	if ffmpeg_output.status.success() {
+		return Ok(());
+	}
+
+	let mut errors = vec![format!(
+		"ffmpeg exited with {}: {}",
+		ffmpeg_output.status,
+		String::from_utf8_lossy(&ffmpeg_output.stderr).trim()
+	)];
+	for program in ["magick", "convert"] {
+		let output = match Command::new(program)
+			.arg(source)
+			.arg("-auto-orient")
+			.arg("-colorspace")
+			.arg("sRGB")
+			.arg("-quality")
+			.arg("80")
+			.arg(destination)
+			.output()
+		{
+			Ok(output) => output,
+			Err(error) => {
+				errors.push(format!("{program} failed to launch: {error}"));
+				continue;
+			}
+		};
+		if output.status.success() {
+			return Ok(());
+		}
+		errors.push(format!(
+			"{program} exited with {}: {}",
+			output.status,
+			String::from_utf8_lossy(&output.stderr).trim()
+		));
+	}
+
+	bail!(
+		"failed to convert {} to {}\n{}",
+		source.display(),
+		destination.display(),
+		errors.join("\n")
+	)
+}
+
+/// Extract the largest embedded JPEG preview from a DNG-like file.
+fn extract_embedded_jpeg(source: &Path, destination: &Path) -> Result<()> {
+	let bytes = fs::read(source).with_context(|| format!("failed to read {}", source.display()))?;
+	let jpeg = largest_jpeg_span(&bytes)
+		.ok_or_else(|| anyhow!("no embedded JPEG preview found in {}", source.display()))?;
+	fs::write(destination, jpeg).with_context(|| {
+		format!(
+			"failed to write embedded JPEG preview to {}",
+			destination.display()
+		)
+	})
+}
+
+/// Return the largest byte range that looks like a complete JPEG stream.
+fn largest_jpeg_span(bytes: &[u8]) -> Option<&[u8]> {
+	let mut largest = None::<(usize, usize)>;
+	let mut index = 0;
+	while index + 2 < bytes.len() {
+		if bytes[index] == 0xff && bytes[index + 1] == 0xd8 && bytes[index + 2] == 0xff {
+			let mut end = None;
+			let mut cursor = index + 2;
+			while cursor + 1 < bytes.len() {
+				if bytes[cursor] == 0xff && bytes[cursor + 1] == 0xd9 {
+					end = Some(cursor + 2);
+					break;
+				}
+				cursor += 1;
+			}
+			if let Some(end) = end {
+				if largest.is_none_or(|(start, previous_end)| end - index > previous_end - start) {
+					largest = Some((index, end));
+				}
+				index = end;
+				continue;
+			}
+		}
+		index += 1;
+	}
+	largest.map(|(start, end)| &bytes[start..end])
+}
+
+/// Return how an Evernote image resource should be written into the static site.
+fn resource_transform(
+	file_name: &str,
+	mime: &str,
+	source_path: Option<&Path>,
+) -> ResourceTransform {
+	if is_dng_image(file_name, mime) {
+		if source_path.is_some_and(dng_has_embedded_jpeg) {
+			ResourceTransform::DngEmbeddedJpeg
+		} else {
+			ResourceTransform::DngToAvif
+		}
+	} else if is_tracker_module(file_name, mime) {
+		ResourceTransform::TrackerToOpus
+	} else if is_vector_artwork(file_name, mime) {
+		ResourceTransform::VectorToAvif
+	} else if should_convert_image_to_avif(file_name, mime) {
+		ResourceTransform::ImageToAvif
+	} else {
+		ResourceTransform::Copy
+	}
+}
+
+/// Return true for module/tracker music that browsers cannot play natively.
+fn is_tracker_module(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	matches!(
+		mime.as_str(),
+		"audio/mod"
+			| "audio/x-mod"
+			| "audio/x-xm"
+			| "audio/x-s3m"
+			| "audio/x-it"
+			| "audio/x-stm"
+			| "audio/x-mtm"
+			| "audio/x-669"
+	) || matches!(
+		file_extension(file_name).as_deref(),
+		Some(
+			"mod"
+				| "xm" | "s3m"
+				| "it" | "stm"
+				| "mtm" | "669"
+				| "ult" | "far"
+				| "med" | "okt"
+				| "amf" | "ams"
+				| "dbm" | "dmf"
+				| "dsm" | "ptm"
+				| "umx"
+		)
+	)
+}
+
+/// Return true for vector artwork containers that need a raster preview.
+fn is_vector_artwork(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	matches!(
+		mime.as_str(),
+		"application/illustrator"
+			| "application/postscript"
+			| "application/eps"
+			| "image/x-eps"
+			| "image/svg+xml-compressed"
+	) || matches!(
+		file_extension(file_name).as_deref(),
+		Some("ai" | "eps" | "epsf" | "ps" | "svgz")
+	)
+}
+
+/// Check whether a DNG file has an embedded JPEG preview without decoding RAW.
+fn dng_has_embedded_jpeg(path: &Path) -> bool {
+	fs::read(path)
+		.ok()
+		.and_then(|bytes| largest_jpeg_span(&bytes).map(|_| ()))
+		.is_some()
+}
+
+/// Return true for image resources that browsers cannot reliably display.
+fn should_convert_image_to_avif(file_name: &str, mime: &str) -> bool {
+	if browser_displayable_image(file_name, mime) {
+		return false;
+	}
+	is_image_resource(file_name, mime)
+}
+
+/// Return true for image resources that browser engines can usually show.
+fn browser_displayable_image(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	matches!(
+		mime.as_str(),
+		"image/jpeg"
+			| "image/png"
+			| "image/gif"
+			| "image/webp"
+			| "image/avif"
+			| "image/svg+xml"
+			| "image/x-icon"
+			| "image/vnd.microsoft.icon"
+	) || matches!(
+		file_extension(file_name).as_deref(),
+		Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "avif" | "svg" | "ico")
+	)
+}
+
+/// Return true for image-like resources, including common RAW containers.
+fn is_image_resource(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	mime.starts_with("image/")
+		|| matches!(
+			file_extension(file_name).as_deref(),
+			Some(
+				"bmp"
+					| "tif" | "tiff"
+					| "heic" | "heif"
+					| "heics" | "heifs"
+					| "jxl" | "jp2" | "j2k"
+					| "j2c" | "jpf" | "psd"
+					| "psb" | "tga" | "ppm"
+					| "pgm" | "pbm" | "pnm"
+					| "exr" | "hdr" | "dds"
+					| "cr2" | "cr3" | "nef"
+					| "nrw" | "arw" | "raf"
+					| "rw2" | "orf" | "pef"
+					| "srw" | "x3f" | "erf"
+					| "kdc" | "dcr" | "mos"
+			)
+		)
+}
+
+/// Return true for DNG RAW resources that need a web-display derivative.
+fn is_dng_image(file_name: &str, mime: &str) -> bool {
+	let mime = mime.to_ascii_lowercase();
+	matches!(mime.as_str(), "image/x-adobe-dng" | "image/dng")
+		|| file_extension(file_name).as_deref() == Some("dng")
+}
+
+/// Replace a safe filename's extension for generated derivative images.
+fn file_name_with_extension(file_name: &str, fallback_hash: &str, extension: &str) -> String {
+	let stem = Path::new(file_name)
+		.file_stem()
+		.and_then(|stem| stem.to_str())
+		.map(str::trim)
+		.filter(|stem| !stem.is_empty())
+		.unwrap_or(fallback_hash);
+	safe_file_name(&format!("{stem}.{extension}"), fallback_hash)
 }
 
 fn apply_stored_settings(
@@ -1618,6 +2077,62 @@ mod tests {
 	}
 
 	#[test]
+	fn classifies_browser_hostile_media_derivatives() {
+		let temp = tempfile::tempdir().unwrap();
+		let dng = temp.path().join("raw.dng");
+		fs::write(
+			&dng,
+			[b"II*\0".as_slice(), &[0xff, 0xd8, 0xff, 0x10, 0xff, 0xd9]].concat(),
+		)
+		.unwrap();
+
+		assert_eq!(
+			resource_transform("IMG.HEIC", "image/heic", None),
+			ResourceTransform::ImageToAvif
+		);
+		assert_eq!(
+			resource_transform("scan.tiff", "image/tiff", None),
+			ResourceTransform::ImageToAvif
+		);
+		assert_eq!(
+			resource_transform("raw.nef", "application/octet-stream", None),
+			ResourceTransform::ImageToAvif
+		);
+		assert_eq!(
+			resource_transform("design.psd", "image/vnd.adobe.photoshop", None),
+			ResourceTransform::ImageToAvif
+		);
+		assert_eq!(
+			resource_transform("poster.ai", "application/illustrator", None),
+			ResourceTransform::VectorToAvif
+		);
+		assert_eq!(
+			resource_transform("poster.eps", "application/postscript", None),
+			ResourceTransform::VectorToAvif
+		);
+		assert_eq!(
+			resource_transform("raw.dng", "image/x-adobe-dng", Some(&dng)),
+			ResourceTransform::DngEmbeddedJpeg
+		);
+		assert_eq!(
+			resource_transform("song.xm", "audio/x-xm", None),
+			ResourceTransform::TrackerToOpus
+		);
+		assert_eq!(
+			file_name_with_extension("IMG.HEIC", "hash", "avif"),
+			"IMG.avif"
+		);
+		assert_eq!(
+			file_name_with_extension("raw.dng", "hash", "jpg"),
+			"raw.jpg"
+		);
+		assert_eq!(
+			file_name_with_extension("song.xm", "hash", "opus"),
+			"song.opus"
+		);
+	}
+
+	#[test]
 	fn extracts_body_text_from_rte_cache_fallback() {
 		let bytes = b"fontWeight\0inherit\0y Body text from rte\0content\0en-note";
 
@@ -1934,6 +2449,7 @@ mod tests {
 		let resources = vec![Resource {
 			hash: "abc123".into(),
 			file_name: "voice.mp3".into(),
+			original_file_name: None,
 			mime: "audio/mpeg".into(),
 			s3_key: None,
 			text_preview: None,
@@ -2019,7 +2535,7 @@ mod tests {
 				database: self.app_db_path.clone(),
 				evernote_config_dir: self.config_dir.clone(),
 				sites_dir: self.sites_dir.clone(),
-				base_domain: "everpublich.xyz".into(),
+				base_domain: "everpublich.my".into(),
 				cloudfront_url: Some("https://d111111abcdef8.cloudfront.net/".into()),
 			}
 		}

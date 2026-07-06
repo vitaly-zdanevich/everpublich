@@ -60,7 +60,7 @@ enum Command {
 		#[arg(
 			long,
 			env = "EVERPUBLICH_BASE_DOMAIN",
-			default_value = "everpublich.xyz"
+			default_value = "everpublich.my"
 		)]
 		base_domain: String,
 		/// Current CloudFront URL used before wildcard DNS exists.
@@ -229,6 +229,7 @@ fn mock_notes() -> Vec<Note> {
             resources: vec![Resource {
                 hash: "abc".into(),
                 file_name: "episode.mp3".into(),
+                original_file_name: None,
                 mime: "audio/mpeg".into(),
                 s3_key: None,
                 text_preview: None,

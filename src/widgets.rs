@@ -122,6 +122,40 @@ impl WidgetProvider {
 			Self::VkPlaylist => "VK playlist",
 		}
 	}
+
+	/// Stable lowercase key used by `everpublich:config`.
+	pub fn config_key(self) -> &'static str {
+		match self {
+			Self::YouTube => "youtube",
+			Self::Instagram => "instagram",
+			Self::Pinterest => "pinterest",
+			Self::Spotify => "spotify",
+			Self::Genius => "genius",
+			Self::SoundCloud => "soundcloud",
+			Self::ApplePodcasts => "apple-podcasts",
+			Self::Vimeo => "vimeo",
+			Self::Rumble => "rumble",
+			Self::Dailymotion => "dailymotion",
+			Self::Bilibili => "bilibili",
+			Self::Odysee => "odysee",
+			Self::YandexMusic => "yandex-music",
+			Self::Bandcamp => "bandcamp",
+			Self::TikTok => "tiktok",
+			Self::Twitch => "twitch",
+			Self::Mixcloud => "mixcloud",
+			Self::InternetArchive => "internet-archive",
+			Self::GitHubGist => "github-gist",
+			Self::CodePen => "codepen",
+			Self::Figma => "figma",
+			Self::GoogleMaps => "google-maps",
+			Self::Reddit => "reddit",
+			Self::Mastodon => "mastodon",
+			Self::Bluesky => "bluesky",
+			Self::Telegram => "telegram",
+			Self::Steam => "steam",
+			Self::VkPlaylist => "vk-playlist",
+		}
+	}
 }
 
 /// A detected widget expansion.
@@ -176,6 +210,61 @@ pub fn supported_widget_names() -> Vec<&'static str> {
 	.into_iter()
 	.map(WidgetProvider::label)
 	.collect()
+}
+
+/// Normalize a config note provider name to a supported widget key.
+pub fn normalize_widget_provider_name(name: &str) -> Option<&'static str> {
+	let wanted = normalize_widget_key(name);
+	[
+		WidgetProvider::YouTube,
+		WidgetProvider::Instagram,
+		WidgetProvider::Pinterest,
+		WidgetProvider::Spotify,
+		WidgetProvider::Genius,
+		WidgetProvider::SoundCloud,
+		WidgetProvider::ApplePodcasts,
+		WidgetProvider::Vimeo,
+		WidgetProvider::Rumble,
+		WidgetProvider::Dailymotion,
+		WidgetProvider::Bilibili,
+		WidgetProvider::Odysee,
+		WidgetProvider::YandexMusic,
+		WidgetProvider::Bandcamp,
+		WidgetProvider::TikTok,
+		WidgetProvider::Twitch,
+		WidgetProvider::Mixcloud,
+		WidgetProvider::InternetArchive,
+		WidgetProvider::GitHubGist,
+		WidgetProvider::CodePen,
+		WidgetProvider::Figma,
+		WidgetProvider::GoogleMaps,
+		WidgetProvider::Reddit,
+		WidgetProvider::Mastodon,
+		WidgetProvider::Bluesky,
+		WidgetProvider::Telegram,
+		WidgetProvider::Steam,
+		WidgetProvider::VkPlaylist,
+	]
+	.into_iter()
+	.find(|provider| {
+		wanted == provider.config_key() || wanted == normalize_widget_key(provider.label())
+	})
+	.map(WidgetProvider::config_key)
+}
+
+fn normalize_widget_key(value: &str) -> String {
+	let mut out = String::new();
+	let mut previous_dash = false;
+	for ch in value.chars().flat_map(char::to_lowercase) {
+		if ch.is_ascii_alphanumeric() {
+			out.push(ch);
+			previous_dash = false;
+		} else if !previous_dash && !out.is_empty() {
+			out.push('-');
+			previous_dash = true;
+		}
+	}
+	out.trim_matches('-').to_string()
 }
 
 /// Detect whether a URL has a known embeddable representation.
@@ -1106,7 +1195,18 @@ fn shortcode_arg(value: &str) -> String {
 
 /// Expand bare URL lines into widget shortcodes; Markdown links are left alone.
 pub fn expand_bare_links(markdown: &str, enabled: bool) -> String {
-	expand_bare_links_with(markdown, enabled, expand_standalone_url)
+	expand_bare_links_with_disabled(markdown, enabled, &Default::default())
+}
+
+/// Expand bare URL lines while skipping widget providers disabled by config.
+pub fn expand_bare_links_with_disabled(
+	markdown: &str,
+	enabled: bool,
+	disabled_providers: &std::collections::HashSet<String>,
+) -> String {
+	expand_bare_links_with(markdown, enabled, |url, fallback| {
+		expand_standalone_url_with_disabled(url, fallback, disabled_providers)
+	})
 }
 
 fn expand_bare_links_with<F>(markdown: &str, enabled: bool, expand_url: F) -> String
@@ -1140,6 +1240,14 @@ where
 }
 
 fn expand_standalone_url(url: &str, fallback: &str) -> String {
+	expand_standalone_url_with_disabled(url, fallback, &Default::default())
+}
+
+fn expand_standalone_url_with_disabled(
+	url: &str,
+	fallback: &str,
+	disabled_providers: &std::collections::HashSet<String>,
+) -> String {
 	if let Ok(parsed) = Url::parse(url)
 		&& let Some(problem) = link_problem(&parsed)
 	{
@@ -1148,7 +1256,12 @@ fn expand_standalone_url(url: &str, fallback: &str) -> String {
 	Url::parse(url)
 		.ok()
 		.and_then(|parsed| direct_media_embed(&parsed))
-		.or_else(|| detect(url).map(|w| w.shortcode))
+		.or_else(|| {
+			detect(url).and_then(|widget| {
+				(!disabled_providers.contains(widget.provider.config_key()))
+					.then_some(widget.shortcode)
+			})
+		})
 		.unwrap_or_else(|| fallback.to_string())
 }
 

@@ -78,6 +78,8 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - A note titled `everpublich:config` can set notebook options like `widgets: off` and can embed fenced `css` or `js` code blocks into the generated website.
 - If an About note references about.me, the intended behavior is to reuse text, image, and links from that profile and link back to it.
 - Images, audio, video, 3D models, text previews, and attachments from Evernote notes are copied to the static site.
+- HEIC/HEIF, DNG, TIFF, BMP, JPEG 2000, JPEG XL, PSD, RAW, and other browser-hostile images are served as AVIF or extracted JPEG, so originals can stay in Evernote.
+- SVG is rendered directly; Adobe Illustrator, EPS, PS, and compressed SVG files get an AVIF preview plus the original file download.
 - Audio and video are playable in the browser.
 - GLB/GLTF, STL, OBJ, PLY, 3MF, DAE, FBX, 3DM, VOX, VTK/VTP, XYZ, and G-code 3D attachments are rotatable in the browser when browser loaders can read them.
 - Text, Markdown, RTF, logs, subtitle, CSV, JSON, YAML, TOML, and XML attachments are shown in a closed preview block with a download link.
@@ -87,7 +89,7 @@ The parser must never modify Evernote cache files. For reliable reads, it should
 - Optional Google Analytics and Yandex Metrica.
 - Mobile-friendly design with black dark mode via `prefers-color-scheme`.
 - Offline support in the browser.
-- Minimal JavaScript, static HTML, minified output, and CloudFront gzip/Brotli compression.
+- Minimal JavaScript, static HTML, minified output, max-Brotli text objects in S3, and CloudFront delivery.
 - Backup value: the generated site and optional GitHub repository become another copy of the Evernote notebook.
 
 ## Widget expansion
@@ -124,6 +126,43 @@ Good extra widget candidates:
 - Google Maps for places
 - Bluesky and Telegram public posts
 
+## `everpublich:config` Note
+
+Create a note titled `everpublich:config` in the shared notebook. It is not rendered as a public page; it controls the generated website.
+
+Supported line-based options:
+
+```text
+widgets: off
+widgets: on
+widget: youtube off
+widget: spotify on
+widget youtube: off
+previews: off
+previews: on
+preview: poster.psd off
+preview poster.psd: off
+```
+
+- `widgets: off` disables all link-to-widget expansion.
+- `widget: youtube off` disables one widget provider while keeping other providers enabled. Use provider keys like `youtube`, `spotify`, `genius`, `soundcloud`, `apple-podcasts`, `vimeo`, `reddit`, `mastodon`, `steam`, or `vk-playlist`.
+- `previews: off` disables attachment previews and renders download links instead.
+- `preview: poster.psd off` disables preview rendering for one file, matched case-insensitively by generated preview filename or original filename.
+
+You can also add custom CSS or JavaScript with fenced code blocks:
+
+````markdown
+```css
+body {
+	color: #222;
+}
+```
+
+```js
+console.log('custom Everpublich script');
+```
+````
+
 ## GitHub backup
 
 The admin panel can connect GitHub OAuth and switch backup repository visibility between private and public. Private is the safer default. Git is useful because it stores all versions, but if you accidentally publish something private, you also need to fix git history. You can write to Vitaly for help.
@@ -132,12 +171,12 @@ The admin panel can connect GitHub OAuth and switch backup repository visibility
 
 Automatic per-user subdomains are feasible through CloudFront. After buying the TLD and creating an ACM certificate in `us-east-1`, set `cloudfront_aliases` and create DNS records at any registrar or DNS provider:
 
-- `CNAME *.everpublich.xyz -> CLOUDFRONT_DOMAIN`
-- `ALIAS/ANAME everpublich.xyz -> CLOUDFRONT_DOMAIN`, if you decide to move the root domain from GitHub Pages later
+- `CNAME *.everpublich.my -> CLOUDFRONT_DOMAIN`
+- `ALIAS/ANAME everpublich.my -> CLOUDFRONT_DOMAIN`, if you decide to move the root domain from GitHub Pages later
 
-Registering the TLD outside AWS can be cheaper than using Route 53 as a registrar. The landing page stays on GitHub Pages. Until the domain is bought, test generated sites with the CloudFront URL, for example `https://CLOUDFRONT_DOMAIN/demo/`.
+Registering the TLD outside AWS can be cheaper than using Route 53 as a registrar. The landing page stays on GitHub Pages. Until CloudFront aliases are configured, test generated sites with the CloudFront URL, for example `https://CLOUDFRONT_DOMAIN/demo/`.
 
-CloudFront can automatically compress eligible objects with gzip and Brotli. Everpublich still asks Zola to minify HTML.
+Everpublich uploads text-like generated files with maximum Brotli compression and `Content-Encoding: br`, while leaving already-compressed media and archives untouched.
 
 ## Similar products
 

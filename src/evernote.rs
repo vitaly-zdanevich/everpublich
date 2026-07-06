@@ -4,10 +4,13 @@
 //! builds signed OAuth URLs and transforms already-fetched notes. Network calls
 //! stay outside this module so tests do not need Evernote credentials.
 
-use crate::enml::enml_to_zola_body;
+use crate::enml::{EnmlRenderOptions, enml_to_zola_body, enml_to_zola_body_with_options};
 use crate::models::{Note, Post, PostKind};
 use crate::slug::slug_from_title_and_tags;
-use crate::widgets::{enrich_link_titles, expand_bare_links, link_wikidata_ids};
+use crate::widgets::{
+	enrich_link_titles, expand_bare_links_with_disabled, link_wikidata_ids,
+	normalize_widget_provider_name,
+};
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -157,18 +160,26 @@ pub fn notes_to_posts(notes: &[Note], expand_widgets: bool) -> Vec<Post> {
 				.get(&note.guid.to_ascii_lowercase())
 				.cloned()
 				.unwrap_or_else(|| slug_from_title_and_tags(&note.title, &note.tags));
-			note_to_post_with_slug(note, slug, &note_slug_by_guid, config.expand_widgets)
+			note_to_post_with_slug(note, slug, &note_slug_by_guid, &config)
 		})
 		.collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NotebookConfig {
 	expand_widgets: bool,
+	previews_enabled: bool,
+	disabled_preview_files: HashSet<String>,
+	disabled_widget_providers: HashSet<String>,
 }
 
 fn notebook_config(notes: &[Note], expand_widgets: bool) -> NotebookConfig {
-	let mut config = NotebookConfig { expand_widgets };
+	let mut config = NotebookConfig {
+		expand_widgets,
+		previews_enabled: true,
+		disabled_preview_files: HashSet::new(),
+		disabled_widget_providers: HashSet::new(),
+	};
 	for note in notes.iter().filter(|note| is_config_note(&note.title)) {
 		apply_config_note(&mut config, &note.enml);
 	}
@@ -180,14 +191,81 @@ fn apply_config_note(config: &mut NotebookConfig, enml: &str) {
 		let Some((key, value)) = line.split_once(':') else {
 			continue;
 		};
-		if key.trim().eq_ignore_ascii_case("widgets") {
-			let value = value.trim().to_ascii_lowercase();
-			if matches!(value.as_str(), "off" | "false" | "no" | "disabled") {
-				config.expand_widgets = false;
-			} else if matches!(value.as_str(), "on" | "true" | "yes" | "enabled") {
-				config.expand_widgets = true;
+		let key = key.trim();
+		let value = value.trim();
+		let key_lower = key.to_ascii_lowercase();
+		if key.eq_ignore_ascii_case("widgets") {
+			if let Some(enabled) = config_bool(value) {
+				config.expand_widgets = enabled;
 			}
+		} else if key.eq_ignore_ascii_case("previews") {
+			if let Some(enabled) = config_bool(value) {
+				config.previews_enabled = enabled;
+			}
+		} else if key.eq_ignore_ascii_case("preview") {
+			apply_named_config_bool(value, &mut config.disabled_preview_files, |file_name| {
+				Some(file_name.trim().to_ascii_lowercase())
+			});
+		} else if key.eq_ignore_ascii_case("widget") {
+			apply_named_config_bool(value, &mut config.disabled_widget_providers, |provider| {
+				normalize_widget_provider_name(provider).map(str::to_string)
+			});
+		} else if let Some(file_name) = key_lower.strip_prefix("preview ") {
+			if let Some(enabled) = config_bool(value) {
+				set_config_item(
+					&mut config.disabled_preview_files,
+					file_name.trim().to_ascii_lowercase(),
+					enabled,
+				);
+			}
+		} else if let Some(provider) = key_lower.strip_prefix("widget ")
+			&& let Some(enabled) = config_bool(value)
+			&& let Some(provider) = normalize_widget_provider_name(provider)
+		{
+			set_config_item(
+				&mut config.disabled_widget_providers,
+				provider.to_string(),
+				enabled,
+			);
 		}
+	}
+}
+
+fn config_bool(value: &str) -> Option<bool> {
+	match value.trim().to_ascii_lowercase().as_str() {
+		"on" | "true" | "yes" | "enabled" => Some(true),
+		"off" | "false" | "no" | "disabled" => Some(false),
+		_ => None,
+	}
+}
+
+fn apply_named_config_bool(
+	value: &str,
+	disabled: &mut HashSet<String>,
+	normalize: impl Fn(&str) -> Option<String>,
+) {
+	let Some((name, enabled)) = split_named_config_bool(value) else {
+		return;
+	};
+	if let Some(name) = normalize(name) {
+		set_config_item(disabled, name, enabled);
+	}
+}
+
+fn split_named_config_bool(value: &str) -> Option<(&str, bool)> {
+	let value = value.trim();
+	let (name, state) = value.rsplit_once(' ')?;
+	config_bool(state).map(|enabled| (name.trim(), enabled))
+}
+
+fn set_config_item(disabled: &mut HashSet<String>, item: String, enabled: bool) {
+	if item.is_empty() {
+		return;
+	}
+	if enabled {
+		disabled.remove(&item);
+	} else {
+		disabled.insert(item);
 	}
 }
 
@@ -232,7 +310,13 @@ pub fn note_to_post(
 	expand_widgets: bool,
 ) -> Post {
 	let slug = note_base_slug(note);
-	note_to_post_with_slug(note, slug, note_slug_by_guid, expand_widgets)
+	let config = NotebookConfig {
+		expand_widgets,
+		previews_enabled: true,
+		disabled_preview_files: HashSet::new(),
+		disabled_widget_providers: HashSet::new(),
+	};
+	note_to_post_with_slug(note, slug, note_slug_by_guid, &config)
 }
 
 fn note_base_slug(note: &Note) -> String {
@@ -253,14 +337,27 @@ fn note_to_post_with_slug(
 	note: &Note,
 	slug: String,
 	note_slug_by_guid: &HashMap<String, String>,
-	expand_widgets: bool,
+	config: &NotebookConfig,
 ) -> Post {
 	let kind = post_kind(&note.title, &note.tags);
-	let body = enml_to_zola_body(&note.enml, &note.resources, note_slug_by_guid);
+	let enml_options = EnmlRenderOptions {
+		previews_enabled: config.previews_enabled,
+		disabled_preview_files: &config.disabled_preview_files,
+	};
+	let body = enml_to_zola_body_with_options(
+		&note.enml,
+		&note.resources,
+		note_slug_by_guid,
+		&enml_options,
+	);
 	let body = if kind == PostKind::Config {
 		body
 	} else {
-		let body = expand_bare_links(&body, expand_widgets);
+		let body = expand_bare_links_with_disabled(
+			&body,
+			config.expand_widgets,
+			&config.disabled_widget_providers,
+		);
 		let body = link_wikidata_ids(&body);
 		enrich_link_titles(&body)
 	};
@@ -493,6 +590,77 @@ mod tests {
 	}
 
 	#[test]
+	fn config_note_can_disable_one_widget_provider() {
+		let notes = vec![
+			Note {
+				guid: "config".into(),
+				title: "everpublich:config".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec![],
+				enml: "<en-note><p>widget: youtube off</p></en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "post".into(),
+				title: "Post".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec![],
+				enml: "<en-note><p>https://youtu.be/dQw4w9WgXcQ</p><p>https://open.spotify.com/track/0VjIjW4GlUZAMYd2vXMi3b</p></en-note>".into(),
+				resources: vec![],
+			},
+		];
+
+		let posts = notes_to_posts(&notes, true);
+
+		assert!(posts[1].body.contains("https://youtu.be/dQw4w9WgXcQ"));
+		assert!(!posts[1].body.contains("youtube("));
+		assert!(posts[1].body.contains("spotify("));
+	}
+
+	#[test]
+	fn config_note_can_disable_preview_by_file() {
+		let notes = vec![
+			Note {
+				guid: "config".into(),
+				title: "everpublich:config".into(),
+				created: utc(1_700_000_000),
+				updated: utc(1_700_000_000),
+				tags: vec![],
+				enml: "<en-note><p>preview: poster.psd off</p></en-note>".into(),
+				resources: vec![],
+			},
+			Note {
+				guid: "post".into(),
+				title: "Post".into(),
+				created: utc(1_700_000_001),
+				updated: utc(1_700_000_001),
+				tags: vec![],
+				enml:
+					r#"<en-note><en-media type="image/vnd.adobe.photoshop" hash="psd"/></en-note>"#
+						.into(),
+				resources: vec![Resource {
+					hash: "psd".into(),
+					file_name: "poster.avif".into(),
+					original_file_name: Some("poster.psd".into()),
+					mime: "image/avif".into(),
+					s3_key: None,
+					text_preview: None,
+					archive_tree: None,
+				}],
+			},
+		];
+
+		let posts = notes_to_posts(&notes, true);
+
+		assert_eq!(
+			posts[1].body,
+			r#"<a class="attachment" href="poster.psd" download>poster.psd</a>"#
+		);
+	}
+
+	#[test]
 	fn maps_podcast_audio_to_shortcode() {
 		let note = Note {
 			guid: "abc".into(),
@@ -504,6 +672,7 @@ mod tests {
 			resources: vec![Resource {
 				hash: "abc".into(),
 				file_name: "episode.mp3".into(),
+				original_file_name: None,
 				mime: "audio/mpeg".into(),
 				s3_key: None,
 				text_preview: None,

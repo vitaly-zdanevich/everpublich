@@ -119,7 +119,7 @@ mod tests {
 
 	#[test]
 	fn user_row_matches_sqlite_schema_values() {
-		let mut settings = SiteSettings::new("Site", "everpublich.xyz");
+		let mut settings = SiteSettings::new("Site", "everpublich.my");
 		settings.notebook_guid = Some("notebook-guid".into());
 		settings.notebook_name = Some("Public Notebook".into());
 

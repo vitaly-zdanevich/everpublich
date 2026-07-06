@@ -11,8 +11,13 @@ packages:
   - build-essential
   - ca-certificates
   - curl
+  - ffmpeg
   - git
+  - ghostscript
+  - imagemagick
   - jq
+  - libraw-bin
+  - poppler-utils
   - pkg-config
   - sqlite3
   - unzip
@@ -145,6 +150,7 @@ write_files:
       set -a
       . /etc/everpublich/everpublich.env
       set +a
+      cd /
 
       if [ -z "$EVERPUBLICH_S3_BUCKET" ]; then
         echo 'EVERPUBLICH_S3_BUCKET is empty; skipping S3 publish.'
@@ -155,6 +161,41 @@ write_files:
         aws s3 sync "$EVERPUBLICH_SITES_DIR/" "s3://$EVERPUBLICH_S3_BUCKET/" \
           --delete \
           --cache-control 'public,max-age=3600'
+        work_dir="$(mktemp -d)"
+        cleanup() {
+          rm -rf "$work_dir"
+        }
+        trap cleanup EXIT
+        content_type() {
+          case "$1" in
+            *.html|*.htm) printf '%s\n' 'text/html; charset=utf-8' ;;
+            *.css) printf '%s\n' 'text/css; charset=utf-8' ;;
+            *.js|*.mjs) printf '%s\n' 'application/javascript; charset=utf-8' ;;
+            *.json|*.webmanifest) printf '%s\n' 'application/json; charset=utf-8' ;;
+            *.xml|*.rss|*.atom) printf '%s\n' 'application/xml; charset=utf-8' ;;
+            *.svg) printf '%s\n' 'image/svg+xml; charset=utf-8' ;;
+            *.txt|*.text|*.log) printf '%s\n' 'text/plain; charset=utf-8' ;;
+            *.csv) printf '%s\n' 'text/csv; charset=utf-8' ;;
+            *.tsv) printf '%s\n' 'text/tab-separated-values; charset=utf-8' ;;
+            *.wasm) printf '%s\n' 'application/wasm' ;;
+            *) printf '%s\n' 'application/octet-stream' ;;
+          esac
+        }
+        find -L "$EVERPUBLICH_SITES_DIR" -type f -print0 | while IFS= read -r -d '' file; do
+          relative="$(realpath --relative-to="$EVERPUBLICH_SITES_DIR" "$file")"
+          case "$relative" in
+            *.html|*.htm|*.css|*.js|*.mjs|*.json|*.webmanifest|*.xml|*.rss|*.atom|*.svg|*.txt|*.text|*.log|*.csv|*.tsv|*.wasm) ;;
+            *) continue ;;
+          esac
+          compressed="$work_dir/$relative"
+          mkdir -p "$(dirname "$compressed")"
+          brotli --force --quality=11 --output="$compressed" "$file"
+          aws s3 cp "$compressed" "s3://$EVERPUBLICH_S3_BUCKET/$relative" \
+            --cache-control 'public,max-age=3600' \
+            --content-encoding br \
+            --content-type "$(content_type "$relative")" \
+            --only-show-errors
+        done
       fi
 
       if [ -n "$EVERPUBLICH_CLOUDFRONT_DISTRIBUTION_ID" ]; then

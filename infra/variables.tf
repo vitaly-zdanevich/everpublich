@@ -24,8 +24,8 @@ variable "repository_url" {
 
 variable "base_domain" {
   type        = string
-  description = "Root domain for per-user subdomains. Until the TLD is bought, test the landing page with the CloudFront URL."
-  default     = "everpublich.xyz"
+  description = "Root domain for per-user subdomains. Until CloudFront aliases are configured, test generated sites with the CloudFront URL."
+  default     = "everpublich.my"
 }
 
 variable "instance_type" {
@@ -217,7 +217,7 @@ variable "cloudfront_price_class" {
 
 variable "cloudfront_aliases" {
   type        = list(string)
-  description = "Optional custom domains for CloudFront, for example everpublich.xyz and *.everpublich.xyz. Requires an ACM certificate in us-east-1."
+  description = "Optional custom domains for CloudFront, for example everpublich.my and *.everpublich.my. Requires an ACM certificate in us-east-1."
   default     = []
 }
 
