@@ -1,29 +1,47 @@
-tenancy_ocid     = "ocid1.tenancy.oc1..change-me"
-user_ocid        = "ocid1.user.oc1..change-me"
-fingerprint      = "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
-private_key_path = "~/.oci/oci_api_key.pem"
-region           = "eu-frankfurt-1"
-compartment_ocid = "ocid1.compartment.oc1..change-me"
+aws_region = "us-east-1"
 
 project_name = "everpublich"
 base_domain  = "everpublich.xyz"
 
-# Choose an Always Free eligible Ubuntu AArch64 image from your OCI home region.
-instance_image_ocid = "ocid1.image.oc1..change-me"
+# m7i-flex.large is x86_64, 2 vCPU, 8 GiB RAM, and AWS lists it as Free Plan eligible.
+instance_type         = "m7i-flex.large"
+instance_architecture = "x86_64"
 
-# OCI Always Free Ampere A1 resources are currently 2 OCPUs, 12 GB RAM,
-# and 200 GB total block storage. These defaults use the whole free ARM VM.
-instance_ocpus        = 2
-instance_memory_gb    = 12
-boot_volume_size_gb   = 200
-ssh_public_key_path   = "~/.ssh/id_ed25519.pub"
-allowed_ssh_cidrs     = ["0.0.0.0/0"]
-availability_domain_index = 0
+# Classic EC2/EBS Free Tier storage is 30 GiB total. This split keeps root simple
+# and puts Evernote cache, SQLite, generated sites, and the repo on compressed Btrfs.
+root_volume_size_gb = 10
+data_volume_size_gb = 20
+btrfs_zstd_level    = 15
 
+# Public IPv4 is disabled by default because AWS charges hourly for it.
+# If cloud-init cannot reach GitHub/rustup/AppImage downloads over IPv6, set this
+# to true temporarily for bootstrap.
+associate_public_ipv4 = false
+enable_ipv6           = true
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+ssh_key_pair_name   = "everpublich-ssh"
+
+# Tighten these after the first deploy.
+allowed_ssh_ipv6_cidrs  = ["::/0"]
 repository_url = "https://github.com/vitaly-zdanevich/everpublich.git"
 
-# Download the latest native ARM Evernote AppImage from Vitaly's repack releases.
+# Generated user sites are synced to this private S3 bucket and served by CloudFront.
+# Leave empty to derive a globally unique bucket name from account ID and region.
+sites_bucket_name              = ""
+create_cloudfront_distribution = true
+cloudfront_price_class         = "PriceClass_100"
+
+# Set after buying a domain and creating an ACM certificate in us-east-1.
+cloudfront_aliases             = []
+cloudfront_acm_certificate_arn = ""
+
+# Download the latest x86_64 Evernote AppImage from Vitaly's repack releases.
 install_evernote_appimage_on_boot = true
 run_evernote_on_boot              = true
 evernote_appimage_repository      = "vitaly-zdanevich/evernote-linux-repackage"
-evernote_appimage_asset_regex     = "^Evernote-.*-aarch64\\.AppImage$"
+evernote_appimage_asset_regex     = "^Evernote-v[0-9][0-9.]*-[0-9]+-x86_64\\.AppImage$"
+
+# Optional. Put the real value in local terraform.tfvars or add it directly to
+# /etc/everpublich/everpublich.env on the VM; do not commit real tokens.
+# genius_token = "paste-token-here"

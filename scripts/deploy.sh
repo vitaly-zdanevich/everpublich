@@ -6,11 +6,11 @@ TERRAFORM_DIR="$ROOT_DIR/infra"
 AUTO_APPROVE="${TERRAFORM_AUTO_APPROVE:-1}"
 STATE_FILE="$TERRAFORM_DIR/terraform.tfstate"
 
-if [[ -f "$STATE_FILE" ]] && grep -q 'hashicorp/aws' "$STATE_FILE"; then
-	echo 'Old AWS Terraform state found at infra/terraform.tfstate.' >&2
-	echo 'Move it aside before applying the OCI VM stack:' >&2
-	echo 'mv infra/terraform.tfstate infra/terraform.tfstate.aws' >&2
-	echo 'mv infra/terraform.tfstate.backup infra/terraform.tfstate.aws.backup' >&2
+if [[ -f "$STATE_FILE" ]] && grep -q 'oracle/oci' "$STATE_FILE"; then
+	echo 'Old OCI Terraform state found at infra/terraform.tfstate.' >&2
+	echo 'Move it aside before applying the AWS EC2 stack:' >&2
+	echo 'mv infra/terraform.tfstate infra/terraform.tfstate.oci' >&2
+	echo 'mv infra/terraform.tfstate.backup infra/terraform.tfstate.oci.backup' >&2
 	exit 2
 fi
 

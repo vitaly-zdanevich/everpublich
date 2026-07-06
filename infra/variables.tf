@@ -1,128 +1,134 @@
-variable "tenancy_ocid" {
+variable "aws_region" {
   type        = string
-  description = "OCI tenancy OCID."
+  description = "AWS region for the EC2 origin and EBS volumes."
+  default     = "us-east-1"
 }
 
-variable "user_ocid" {
+variable "availability_zone" {
   type        = string
-  description = "OCI user OCID for Terraform API calls."
-}
-
-variable "fingerprint" {
-  type        = string
-  description = "Fingerprint of the OCI API signing key."
-}
-
-variable "private_key_path" {
-  type        = string
-  description = "Path to the OCI API signing private key."
-}
-
-variable "private_key_password" {
-  type        = string
-  description = "Optional password for the OCI API signing private key."
-  sensitive   = true
+  description = "Optional availability zone for the EC2 instance and Btrfs EBS volume. Empty means the first available AZ in aws_region."
   default     = ""
-}
-
-variable "region" {
-  type        = string
-  description = "OCI home region where Always Free resources are available."
-}
-
-variable "compartment_ocid" {
-  type        = string
-  description = "OCI compartment OCID for the VM and network. The tenancy OCID can be used if you deploy into the root compartment."
 }
 
 variable "project_name" {
   type        = string
-  description = "Name prefix for OCI resources."
+  description = "Name prefix for AWS resources."
   default     = "everpublich"
 }
 
 variable "repository_url" {
   type        = string
-  description = "Git repository cloned onto the VM for in-place ARM builds."
+  description = "Git repository cloned onto the VM for in-place builds."
   default     = "https://github.com/vitaly-zdanevich/everpublich.git"
 }
 
 variable "base_domain" {
   type        = string
-  description = "Root domain for per-user subdomains. Until the TLD is bought, test with the VM public IP or local hosts entries."
+  description = "Root domain for per-user subdomains. Until the TLD is bought, test the landing page with the CloudFront URL."
   default     = "everpublich.xyz"
 }
 
-variable "instance_image_ocid" {
+variable "instance_type" {
   type        = string
-  description = "OCID of an Always Free eligible Ubuntu AArch64 image in your OCI home region."
+  description = "EC2 instance type. m7i-flex.large gives 2 vCPU and 8 GiB RAM and is listed by AWS as Free Plan eligible."
+  default     = "m7i-flex.large"
+}
+
+variable "instance_architecture" {
+  type        = string
+  description = "CPU architecture for the selected instance type and Ubuntu AMI."
+  default     = "x86_64"
 
   validation {
-    condition     = length(var.instance_image_ocid) > 0
-    error_message = "Set instance_image_ocid to an Ubuntu AArch64 image OCID from your OCI region."
+    condition     = contains(["x86_64", "arm64"], var.instance_architecture)
+    error_message = "Use x86_64 or arm64."
   }
 }
 
-variable "availability_domain_index" {
-  type        = number
-  description = "Zero-based availability-domain index. Try another value if OCI reports out of host capacity."
-  default     = 0
+variable "ubuntu_release" {
+  type        = string
+  description = "Ubuntu LTS release used for the EC2 AMI lookup."
+  default     = "24.04"
 }
 
-variable "instance_ocpus" {
+variable "root_volume_size_gb" {
   type        = number
-  description = "Ampere A1 OCPUs. The Always Free total is currently 2 OCPUs."
-  default     = 2
+  description = "Root EBS volume size in GiB. Keep root + data volumes at or below 30 GiB to fit the classic EBS Free Tier allowance."
+  default     = 10
 
   validation {
-    condition     = var.instance_ocpus > 0 && var.instance_ocpus <= 2
-    error_message = "Use 1 or 2 OCPUs to stay inside OCI Always Free Ampere A1 limits."
+    condition     = var.root_volume_size_gb >= 8
+    error_message = "Use at least 8 GiB for the Ubuntu root volume."
   }
 }
 
-variable "instance_memory_gb" {
+variable "associate_public_ipv4" {
+  type        = bool
+  description = "Assign a public IPv4 address to the EC2 instance. AWS charges hourly for public IPv4, so the default is IPv6-only."
+  default     = false
+}
+
+variable "enable_ipv6" {
+  type        = bool
+  description = "Assign Amazon-provided IPv6 to the VPC, subnet, and EC2 instance."
+  default     = true
+}
+
+variable "data_volume_size_gb" {
   type        = number
-  description = "Ampere A1 memory in GB. The Always Free total is currently 12 GB."
-  default     = 12
+  description = "Compressed Btrfs data EBS volume size in GiB for Evernote cache, SQLite, generated sites, and build checkout."
+  default     = 20
 
   validation {
-    condition     = var.instance_memory_gb >= 1 && var.instance_memory_gb <= 12
-    error_message = "Use 1 through 12 GB to stay inside OCI Always Free Ampere A1 limits."
+    condition     = var.data_volume_size_gb >= 1
+    error_message = "Use at least 1 GiB for the Everpublich data volume."
   }
 }
 
-variable "boot_volume_size_gb" {
+variable "btrfs_zstd_level" {
   type        = number
-  description = "Boot volume size. OCI Always Free gives 200 GB total block storage, including boot volumes."
-  default     = 200
+  description = "Btrfs zstd compression level for the data volume. 15 is the maximum supported level."
+  default     = 15
 
   validation {
-    condition     = var.boot_volume_size_gb >= 50 && var.boot_volume_size_gb <= 200
-    error_message = "Use 50 through 200 GB for the boot volume."
+    condition     = var.btrfs_zstd_level >= 1 && var.btrfs_zstd_level <= 15
+    error_message = "Use a Btrfs zstd compression level from 1 through 15."
   }
 }
 
 variable "ssh_public_key_path" {
   type        = string
-  description = "Path to the public key installed for SSH access to the VM."
+  description = "Path to the public key installed for SSH access to the EC2 instance."
   default     = "~/.ssh/id_ed25519.pub"
+}
+
+variable "ssh_key_pair_name" {
+  type        = string
+  description = "AWS EC2 key pair name created from ssh_public_key_path."
+  default     = "everpublich-ssh"
 }
 
 variable "ssh_user" {
   type        = string
-  description = "Default SSH user for the chosen image. Ubuntu images normally use ubuntu."
+  description = "Default SSH user for the chosen Ubuntu image."
   default     = "ubuntu"
 }
 
 variable "allowed_ssh_cidrs" {
   type        = list(string)
-  description = "CIDR blocks allowed to SSH to the VM. Tighten this after the first deploy."
-  default     = ["0.0.0.0/0"]
+  description = "IPv4 CIDR blocks allowed to SSH to the EC2 instance. Empty by default because public IPv4 is disabled."
+  default     = []
 }
 
-variable "vcn_cidr" {
+variable "allowed_ssh_ipv6_cidrs" {
+  type        = list(string)
+  description = "IPv6 CIDR blocks allowed to SSH to the EC2 instance. Tighten this after the first deploy."
+  default     = ["::/0"]
+}
+
+variable "vpc_cidr" {
   type        = string
-  description = "CIDR block for the Everpublich VCN."
+  description = "CIDR block for the Everpublich VPC."
   default     = "10.42.0.0/16"
 }
 
@@ -130,24 +136,6 @@ variable "public_subnet_cidr" {
   type        = string
   description = "CIDR block for the public subnet."
   default     = "10.42.1.0/24"
-}
-
-variable "vcn_dns_label" {
-  type        = string
-  description = "DNS label for the OCI VCN. Use letters and numbers only."
-  default     = "everpublich"
-}
-
-variable "subnet_dns_label" {
-  type        = string
-  description = "DNS label for the OCI subnet. Use letters and numbers only."
-  default     = "public"
-}
-
-variable "instance_hostname_label" {
-  type        = string
-  description = "Hostname label for the VM VNIC. Use letters and numbers only."
-  default     = "everpublich"
 }
 
 variable "zola_version" {
@@ -164,7 +152,7 @@ variable "install_rustup_on_boot" {
 
 variable "install_zola_on_boot" {
   type        = bool
-  description = "Install the configured AArch64 Zola release during cloud-init."
+  description = "Install the configured Zola release during cloud-init."
   default     = true
 }
 
@@ -194,8 +182,54 @@ variable "evernote_appimage_repository" {
 
 variable "evernote_appimage_asset_regex" {
   type        = string
-  description = "Regex used against release asset names. The default selects the normal AArch64 AppImage, not the black-theme variant."
-  default     = "^Evernote-.*-aarch64\\.AppImage$"
+  description = "Regex used against release asset names. The default selects the normal x86_64 AppImage for m7i-flex.large."
+  default     = "^Evernote-v[0-9][0-9.]*-[0-9]+-x86_64\\.AppImage$"
+}
+
+variable "create_cloudfront_distribution" {
+  type        = bool
+  description = "Create a CloudFront distribution in front of the private S3 generated-sites bucket."
+  default     = true
+}
+
+variable "sites_bucket_name" {
+  type        = string
+  description = "Optional globally unique S3 bucket name for generated static sites. Empty uses project-name, account ID, and region."
+  default     = ""
+}
+
+variable "cloudfront_price_class" {
+  type        = string
+  description = "CloudFront edge location price class."
+  default     = "PriceClass_100"
+
+  validation {
+    condition     = contains(["PriceClass_100", "PriceClass_200", "PriceClass_All"], var.cloudfront_price_class)
+    error_message = "Use PriceClass_100, PriceClass_200, or PriceClass_All."
+  }
+}
+
+variable "cloudfront_aliases" {
+  type        = list(string)
+  description = "Optional custom domains for CloudFront, for example everpublich.xyz and *.everpublich.xyz. Requires an ACM certificate in us-east-1."
+  default     = []
+}
+
+variable "cloudfront_acm_certificate_arn" {
+  type        = string
+  description = "ACM certificate ARN in us-east-1 for cloudfront_aliases. Leave empty when using the default cloudfront.net domain."
+  default     = ""
+
+  validation {
+    condition     = length(var.cloudfront_aliases) == 0 || length(var.cloudfront_acm_certificate_arn) > 0
+    error_message = "Set cloudfront_acm_certificate_arn when cloudfront_aliases is not empty."
+  }
+}
+
+variable "cloudfront_wait_for_deployment" {
+  type        = bool
+  description = "Wait for CloudFront deployment completion during terraform apply."
+  default     = false
 }
 
 variable "support_email" {
@@ -214,4 +248,11 @@ variable "support_tickets" {
   type        = string
   description = "Support issue tracker link shown by app/admin surfaces."
   default     = "https://github.com/vitaly-zdanevich/everpublich/issues"
+}
+
+variable "genius_token" {
+  type        = string
+  description = "Optional Genius Client Access Token used to resolve genius.com links to YouTube and lyrics embeds."
+  default     = ""
+  sensitive   = true
 }

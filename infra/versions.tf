@@ -2,18 +2,13 @@ terraform {
   required_version = ">= 1.6.0"
 
   required_providers {
-    oci = {
-      source  = "oracle/oci"
-      version = "~> 7.0"
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
     }
   }
 }
 
-provider "oci" {
-  fingerprint          = var.fingerprint
-  private_key_password = var.private_key_password == "" ? null : var.private_key_password
-  private_key_path     = pathexpand(var.private_key_path)
-  region               = var.region
-  tenancy_ocid         = var.tenancy_ocid
-  user_ocid            = var.user_ocid
+provider "aws" {
+  region = var.aws_region
 }
