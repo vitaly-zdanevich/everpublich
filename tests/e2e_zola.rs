@@ -85,6 +85,10 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, ".attachment-preview iframe{");
 	assert_contains(&style, ".attachment-preview pre{");
 	assert_contains(&style, ".embed-vk-playlist iframe{height:450px}");
+	assert_contains(
+		&style,
+		".embed-vk-playlist iframe{filter:invert()hue-rotate(180deg)}",
+	);
 	assert_contains(&style, ".embed-mastodon-post iframe{height:520px}");
 	assert_contains(&style, ".mastodon-profile-card{");
 	assert_contains(&style, "display:flex");
@@ -116,6 +120,22 @@ fn zola_build_renders_public_html() {
 	assert_contains(
 		&style,
 		".embed-genius .rg_embed a[data-id]{color:var(--fg)!important;background-color:#6ed69a38!important}",
+	);
+	assert_contains(
+		&style,
+		"genius-back-page#genius_back_page{background:#080808!important}",
+	);
+	assert_contains(
+		&style,
+		"genius-back-page#genius_back_page iframe{filter:invert()hue-rotate(180deg);background:#080808}",
+	);
+	assert_contains(
+		&style,
+		".com-genius-Genius-touch.com-genius-Genius-showing genius-back-page#genius_back_page.showing{background-color:#080808!important}",
+	);
+	assert_contains(
+		&style,
+		"genius-back-page-mobile-clickjacker{background:#0000008c!important}",
 	);
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");

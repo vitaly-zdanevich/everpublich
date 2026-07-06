@@ -435,6 +435,10 @@ blockquote:not(.instagram-media) > :last-child {
 }
 
 @media (prefers-color-scheme: dark) {
+	.embed-vk-playlist iframe {
+		filter: invert(1) hue-rotate(180deg);
+	}
+
 	.embed-genius {
 		background: #080808;
 		border-radius: 4px;
@@ -480,6 +484,23 @@ blockquote:not(.instagram-media) > :last-child {
 
 	.embed-genius .rg_embed_logo::after {
 		border-top-color: #202000 !important;
+	}
+
+	genius-back-page#genius_back_page {
+		background: #080808 !important;
+	}
+
+	genius-back-page#genius_back_page iframe {
+		background: #080808;
+		filter: invert(1) hue-rotate(180deg);
+	}
+
+	.com-genius-Genius-touch.com-genius-Genius-showing genius-back-page#genius_back_page.showing {
+		background-color: #080808 !important;
+	}
+
+	genius-back-page-mobile-clickjacker {
+		background: rgb(0 0 0 / 55%) !important;
 	}
 }
 
