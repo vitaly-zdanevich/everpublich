@@ -37,11 +37,31 @@ fn zola_build_renders_public_html() {
 	assert_contains(&index, "search_index.en.js");
 	assert_contains(&index, "rss.xml");
 	assert_contains(&index, "podcast.xml");
+	assert_contains(&index, ">About<");
+	assert_contains(&index, ">Tags<");
+	assert_not_contains(&index, ">RSS<");
+
+	let search_js = read(&public, "search.js");
+	assert_contains(&search_js, "documentStore.docs");
+	let style = read(&public, "style.css");
+	assert_contains(&style, ".search:focus-within");
+	assert_contains(&style, "transition:width .12s");
+	assert_contains(&style, ".post-nav");
 
 	let first_post = read(&public, "posts/hello-from-evernote/index.html");
+	assert_contains(
+		&first_post,
+		"href=https://my-notebook.everpublich.example/day/2023-11-14",
+	);
+	assert_contains(&first_post, "title=22:13:20");
 	assert_contains(&first_post, "href=/posts/linked-note/");
 	assert_contains(&first_post, "src=photo.jpg");
 	assert_contains(&first_post, "href=archive.pdf");
+	assert_contains(&first_post, "post-nav");
+	assert_contains(
+		&first_post,
+		"Linked Note\nLinked from another note.\nSecond tooltip line.\nQuoted tooltip line\nMore quote.",
+	);
 
 	let media_post = read(&public, "posts/media-note/index.html");
 	assert_contains(&media_post, "<audio controls");
@@ -50,16 +70,116 @@ fn zola_build_renders_public_html() {
 	assert_contains(&media_post, "clip.mp4");
 
 	let calendar = read(&public, "calendar/index.html");
-	assert_contains(&calendar, "/day/2023-11-14");
-	assert!(public.join("day/2023-11-14/index.html").exists());
+	assert_contains(
+		&calendar,
+		"<h3><a href=https://my-notebook.everpublich.example/month/2023-11/>November</a></h3>",
+	);
+	assert_not_contains(&calendar, "<h3>11</h3>");
+	assert_contains(&calendar, "calendar-days");
+	assert_contains(&calendar, "calendar-day--one");
+	assert_contains(&calendar, "title=\"1 post\n\nHello from Evernote\"");
+	assert_not_contains(&calendar, "<h1>Calendar</h1>");
+	assert_contains(&calendar, "<span>Calendar</span>");
+	assert_not_contains(&calendar, "<ol>");
+	assert_not_contains(&calendar, "<li>");
+	assert_not_contains(&calendar, "<span>1</span>");
+	assert_contains(
+		&calendar,
+		"https://my-notebook.everpublich.example/day/2023-11-14/",
+	);
+	let month = read(&public, "month/2023-11/index.html");
+	assert_contains(&month, "<h1>November 2023</h1>");
+	assert_contains(&month, "Rich ENML formatting is preserved.");
+	assert_contains(&month, "Audio and video stay playable.");
+
+	let day = read(&public, "day/2023-11-14/index.html");
+	assert_contains(&day, "Rich ENML formatting is preserved.");
+	assert_contains(&day, "aria-label=\"Day navigation\"");
+	assert_contains(
+		&day,
+		"href=https://my-notebook.everpublich.example/day/2023-11-15/",
+	);
+	assert_contains(&day, "title=\"November 15\n\nLinked Note\"");
+	assert_contains(&day, "<strong>November 15</strong>");
+	assert_contains(
+		&day,
+		"href=https://my-notebook.everpublich.example/posts/hello-from-evernote/",
+	);
 
 	let about = read(&public, "about/index.html");
 	assert_contains(&about, "I use Evernote from 2009 and love it.");
+	assert_not_contains(&about, "post-nav");
 
 	assert!(public.join("sitemap.xml").exists());
 	assert!(public.join("rss.xml").exists());
 	assert!(public.join("podcast.xml").exists());
 	assert!(public.join("tags/intro/index.html").exists());
+}
+
+#[test]
+fn zola_build_omits_about_link_without_about_page() {
+	let dir = tempfile::tempdir().unwrap();
+	let user = user_fixture();
+	let notes = note_fixtures()
+		.into_iter()
+		.filter(|note| !note.tags.iter().any(|tag| tag == "about"))
+		.collect::<Vec<_>>();
+	let posts = notes_to_posts(&notes, true);
+
+	let generated = write_zola_site(dir.path(), &user, &posts).unwrap();
+	assert_eq!(generated.pages, 0);
+
+	let output = Command::new("zola")
+		.arg("--root")
+		.arg(dir.path())
+		.arg("build")
+		.output()
+		.expect("zola binary must be installed for the end-to-end HTML test");
+	assert!(
+		output.status.success(),
+		"zola build failed\nstdout:\n{}\nstderr:\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+
+	let public = dir.path().join("public");
+	let index = read(&public, "index.html");
+	assert_not_contains(&index, ">About<");
+	assert!(!public.join("about/index.html").exists());
+}
+
+#[test]
+fn zola_build_omits_tags_link_without_public_tags() {
+	let dir = tempfile::tempdir().unwrap();
+	let user = user_fixture();
+	let mut notes = note_fixtures();
+	for note in &mut notes {
+		note.tags.clear();
+	}
+	let posts = notes_to_posts(&notes, true);
+
+	let generated = write_zola_site(dir.path(), &user, &posts).unwrap();
+	assert_eq!(generated.posts, 4);
+	assert_eq!(generated.pages, 0);
+
+	let output = Command::new("zola")
+		.arg("--root")
+		.arg(dir.path())
+		.arg("build")
+		.output()
+		.expect("zola binary must be installed for the end-to-end HTML test");
+	assert!(
+		output.status.success(),
+		"zola build failed\nstdout:\n{}\nstderr:\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+
+	let public = dir.path().join("public");
+	let index = read(&public, "index.html");
+	assert_not_contains(&index, ">Tags<");
+	let tags = read(&public, "tags/index.html");
+	assert_contains(&tags, "No tags found in the synced Evernote cache.");
 }
 
 fn user_fixture() -> UserItem {
@@ -106,7 +226,7 @@ fn note_fixtures() -> Vec<Note> {
 			created: utc(1_700_086_400),
 			updated: utc(1_700_086_500),
 			tags: vec!["reference".into()],
-			enml: "<en-note><p>Linked from another note.</p></en-note>".into(),
+			enml: "<en-note><p>Linked from another note.</p><p>Second tooltip line.</p><blockquote>Quoted tooltip line<br/>More quote.</blockquote></en-note>".into(),
 			resources: vec![],
 		},
 		Note {
@@ -151,5 +271,12 @@ fn assert_contains(haystack: &str, needle: &str) {
 	assert!(
 		haystack.contains(needle),
 		"expected generated HTML to contain {needle:?}\n\n{haystack}"
+	);
+}
+
+fn assert_not_contains(haystack: &str, needle: &str) {
+	assert!(
+		!haystack.contains(needle),
+		"expected generated HTML not to contain {needle:?}\n\n{haystack}"
 	);
 }

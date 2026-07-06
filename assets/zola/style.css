@@ -27,7 +27,7 @@
 
 body {
 	margin: 0 auto;
-	max-width: 920px;
+	width: 95vw;
 	padding: 18px;
 	background: var(--bg);
 	color: var(--fg);
@@ -36,6 +36,7 @@ body {
 
 a {
 	color: var(--link);
+	text-decoration: none;
 }
 
 img,
@@ -66,7 +67,6 @@ th {
 	gap: 16px;
 	align-items: center;
 	flex-wrap: wrap;
-	border-bottom: 1px solid var(--line);
 	padding-bottom: 12px;
 	margin-bottom: 28px;
 }
@@ -86,6 +86,12 @@ th {
 .search {
 	margin-left: auto;
 	position: relative;
+	width: 180px;
+	transition: width 120ms ease;
+}
+
+.search:focus-within {
+	width: min(360px, 42vw);
 }
 
 .search input {
@@ -94,13 +100,21 @@ th {
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	padding: .42rem .55rem;
-	min-width: 180px;
+	width: 100%;
+	min-width: 0;
+}
+
+.search input:focus,
+.search input:active {
+	border-color: var(--accent);
+	outline: none;
 }
 
 #search-results {
 	position: absolute;
 	right: 0;
 	z-index: 3;
+	width: 100%;
 	min-width: 260px;
 	max-height: 55vh;
 	overflow: auto;
@@ -120,7 +134,6 @@ th {
 }
 
 .meta,
-.site-footer,
 .post-list time,
 .tag-list span {
 	color: var(--muted);
@@ -182,8 +195,32 @@ th {
 	min-width: 180px;
 }
 
-.calendar-month ol {
-	padding-left: 1.3rem;
+.calendar-days {
+	display: flex;
+	gap: .45rem .7rem;
+	align-items: baseline;
+	flex-wrap: wrap;
+}
+
+.calendar-day {
+	display: inline-block;
+	min-width: 2ch;
+	line-height: 1;
+}
+
+.calendar-day--one {
+	font-size: 1rem;
+	font-weight: 500;
+}
+
+.calendar-day--two {
+	font-size: 1.25rem;
+	font-weight: 650;
+}
+
+.calendar-day--many {
+	font-size: 1.55rem;
+	font-weight: 800;
 }
 
 .pager {
@@ -192,11 +229,37 @@ th {
 	gap: 16px;
 }
 
-.site-footer {
-	border-top: 1px solid var(--line);
-	margin-top: 48px;
-	padding-top: 16px;
-	font-size: .9rem;
+.post-nav {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 36px 0 0;
+}
+
+.post-nav__link {
+	display: block;
+	flex: 1;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--panel);
+	padding: .7rem .8rem;
+	color: var(--fg);
+	text-decoration: none;
+}
+
+.post-nav__link--next {
+	text-align: right;
+}
+
+.post-nav__link span {
+	display: block;
+	color: var(--muted);
+	font-size: .82rem;
+}
+
+.post-nav__link strong {
+	display: block;
+	overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {
@@ -204,12 +267,21 @@ th {
 		padding: 12px;
 	}
 
-	.search {
+	.search,
+	.search:focus-within {
 		margin-left: 0;
 		width: 100%;
 	}
 
 	.search input {
 		width: 100%;
+	}
+
+	.post-nav {
+		flex-direction: column;
+	}
+
+	.post-nav__link--next {
+		text-align: left;
 	}
 }

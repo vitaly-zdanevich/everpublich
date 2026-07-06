@@ -1,13 +1,19 @@
 //! Zola source tree generation.
 
 use crate::models::{IndexMode, Post, PostKind, SearchMode, SiteSettings, UserItem};
+use crate::slug::slugify;
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate};
-use html_escape::{encode_double_quoted_attribute, encode_text};
+use html_escape::{
+	decode_html_entities, encode_double_quoted_attribute, encode_single_quoted_attribute,
+	encode_text,
+};
+use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Summary of a generated Zola source tree.
@@ -23,7 +29,7 @@ pub struct GeneratedSite {
 }
 
 /// Write a complete Zola source tree. The caller should run `zola build` and
-/// serve `public/` with nginx or mirror it to GitHub afterwards.
+/// sync `public/` to the configured static hosting target.
 pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<GeneratedSite> {
 	fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
 	fs::create_dir_all(root.join("content/posts"))?;
@@ -32,7 +38,12 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 	fs::create_dir_all(root.join("templates/tags"))?;
 	fs::create_dir_all(root.join("static"))?;
 
-	write_file(&root.join("config.toml"), &config_toml(&user.settings))?;
+	let has_about_page = posts.iter().any(|post| post.kind == PostKind::About);
+	let has_tags_page = posts.iter().any(|post| !post.tags.is_empty());
+	write_file(
+		&root.join("config.toml"),
+		&config_toml(&user.settings, has_about_page, has_tags_page),
+	)?;
 	write_file(
 		&root.join("content/_index.md"),
 		&root_index_md(&user.settings),
@@ -71,8 +82,12 @@ pub fn write_zola_site(root: &Path, user: &UserItem, posts: &[Post]) -> Result<G
 		}
 	}
 
-	write_calendar(root, &day_posts)?;
-	write_day_pages(root, &day_posts)?;
+	write_calendar(root, &day_posts, &user.settings.base_url)?;
+	write_day_pages(root, &day_posts, &user.settings.base_url)?;
+	write_month_pages(root, &day_posts, &user.settings.base_url)?;
+	if !has_tags_page {
+		write_empty_tags_page(root)?;
+	}
 	let podcast_items = write_podcast(root, &user.settings, posts)?;
 
 	Ok(GeneratedSite {
@@ -90,7 +105,7 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
 	fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn config_toml(settings: &SiteSettings) -> String {
+fn config_toml(settings: &SiteSettings, has_about_page: bool, has_tags_page: bool) -> String {
 	let feeds = "generate_feeds = true\nfeed_filenames = [\"rss.xml\"]\n";
 	let theme = settings
 		.zola_theme
@@ -130,6 +145,8 @@ search_static = {search}
 search_google = {google_search}
 expand_widgets = {expand_widgets}
 has_custom_css = {has_custom_css}
+has_about_page = {has_about_page}
+has_tags_page = {has_tags_page}
 google_analytics_id = {google_analytics}
 yandex_metrica_id = {yandex_metrica}
 "#,
@@ -145,6 +162,8 @@ yandex_metrica_id = {yandex_metrica}
 		google_search = google_search,
 		expand_widgets = settings.expand_widgets,
 		has_custom_css = has_custom_css,
+		has_about_page = has_about_page,
+		has_tags_page = has_tags_page,
 		google_analytics = option_toml(settings.google_analytics_id.as_deref()),
 		yandex_metrica = option_toml(settings.yandex_metrica_id.as_deref()),
 	)
@@ -163,7 +182,7 @@ const POSTS_INDEX_MD: &str = "+++\nsort_by = \"date\"\ntransparent = true\npagin
 
 fn write_post(root: &Path, post: &Post) -> Result<()> {
 	let dir = root.join("content/posts").join(&post.slug);
-	let mut md = front_matter(post, Some("page.html"), None);
+	let mut md = front_matter(post, Some("post.html"), None);
 	md.push_str(&post.body);
 	md.push('\n');
 	write_file(&dir.join("index.md"), &md)
@@ -205,11 +224,20 @@ fn front_matter(post: &Post, template: Option<&str>, path: Option<&str>) -> Stri
 	out.push_str("\n[extra]\n");
 	let _ = writeln!(out, "guid = \"{}\"", toml_escape(&post.guid));
 	let _ = writeln!(out, "day = \"{}\"", post.date.format("%Y-%m-%d"));
+	let _ = writeln!(
+		out,
+		"nav_title = \"{}\"",
+		toml_escape(&post_nav_title(post))
+	);
 	out.push_str("+++\n\n");
 	out
 }
 
-fn write_calendar(root: &Path, day_posts: &BTreeMap<NaiveDate, Vec<&Post>>) -> Result<()> {
+fn write_calendar(
+	root: &Path,
+	day_posts: &BTreeMap<NaiveDate, Vec<&Post>>,
+	base_url: &str,
+) -> Result<()> {
 	let mut html = String::new();
 	html.push_str(
 		"+++\ntitle = \"Calendar\"\npath = \"calendar\"\ntemplate = \"calendar.html\"\n+++\n\n",
@@ -234,20 +262,26 @@ fn write_calendar(root: &Path, day_posts: &BTreeMap<NaiveDate, Vec<&Post>>) -> R
 			if days.is_empty() {
 				continue;
 			}
+			let month_name = month_name(month);
+			let month_url = site_url(base_url, &format!("month/{year}-{month:02}/"));
 			let _ = writeln!(
 				html,
-				"<section class=\"calendar-month\"><h3>{month:02}</h3><ol>"
+				"<section class=\"calendar-month\"><h3><a href='{}'>{month_name}</a></h3><div class=\"calendar-days\">",
+				encode_single_quoted_attribute(&month_url)
 			);
-			for (day, count) in days {
+			for (day, posts) in days {
+				let count = posts.len();
+				let url = site_url(base_url, &format!("day/{day}/"));
 				let _ = writeln!(
 					html,
-					"<li><a href=\"/day/{}/\">{} <span>{}</span></a></li>",
-					day,
+					"<a class='{}' href='{}' title='{}'>{}</a>",
+					calendar_day_class(count),
+					encode_single_quoted_attribute(&url),
+					encode_calendar_title_attribute(&calendar_day_title(posts)),
 					day.day(),
-					count.len()
 				);
 			}
-			html.push_str("</ol></section>\n");
+			html.push_str("</div></section>\n");
 		}
 		html.push_str("</div>\n");
 	}
@@ -255,8 +289,80 @@ fn write_calendar(root: &Path, day_posts: &BTreeMap<NaiveDate, Vec<&Post>>) -> R
 	write_file(&root.join("content/pages/calendar.md"), &html)
 }
 
-fn write_day_pages(root: &Path, day_posts: &BTreeMap<NaiveDate, Vec<&Post>>) -> Result<()> {
-	for (day, posts) in day_posts {
+fn calendar_day_class(count: usize) -> &'static str {
+	match count {
+		0 | 1 => "calendar-day calendar-day--one",
+		2 => "calendar-day calendar-day--two",
+		_ => "calendar-day calendar-day--many",
+	}
+}
+
+fn post_count_label(count: usize) -> String {
+	if count == 1 {
+		"1 post".to_string()
+	} else {
+		format!("{count} posts")
+	}
+}
+
+/// Build the browser tooltip for a calendar day link.
+fn calendar_day_title(posts: &[&Post]) -> String {
+	let titles = posts
+		.iter()
+		.map(|post| post.title.trim())
+		.filter(|title| !title.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n\n");
+	if titles.is_empty() {
+		post_count_label(posts.len())
+	} else {
+		format!("{}\n\n{titles}", post_count_label(posts.len()))
+	}
+}
+
+fn day_archive_title(day: &NaiveDate, posts: &[&Post]) -> String {
+	let titles = posts
+		.iter()
+		.map(|post| post.title.trim())
+		.filter(|title| !title.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n\n");
+	if titles.is_empty() {
+		format!("{} {}", month_name(day.month()), day.day())
+	} else {
+		format!("{} {}\n\n{titles}", month_name(day.month()), day.day())
+	}
+}
+
+fn encode_calendar_title_attribute(title: &str) -> String {
+	encode_single_quoted_attribute(title).replace('\n', "&#10;")
+}
+
+fn month_name(month: u32) -> &'static str {
+	match month {
+		1 => "January",
+		2 => "February",
+		3 => "March",
+		4 => "April",
+		5 => "May",
+		6 => "June",
+		7 => "July",
+		8 => "August",
+		9 => "September",
+		10 => "October",
+		11 => "November",
+		12 => "December",
+		_ => "",
+	}
+}
+
+fn write_day_pages(
+	root: &Path,
+	day_posts: &BTreeMap<NaiveDate, Vec<&Post>>,
+	base_url: &str,
+) -> Result<()> {
+	let days = day_posts.iter().collect::<Vec<_>>();
+	for (index, (day, posts)) in days.iter().copied().enumerate() {
 		let dir = root.join("content/day").join(day.to_string());
 		let mut md = String::new();
 		md.push_str("+++\n");
@@ -265,16 +371,142 @@ fn write_day_pages(root: &Path, day_posts: &BTreeMap<NaiveDate, Vec<&Post>>) -> 
 		md.push_str("template = \"day.html\"\n");
 		md.push_str("+++\n\n");
 		for post in posts {
-			let _ = writeln!(
-				md,
-				"- [{}](/posts/{}/)",
-				encode_text(&post.title),
-				post.slug
-			);
+			write_day_post(&mut md, post, base_url);
+		}
+		write_day_nav(
+			&mut md,
+			base_url,
+			index
+				.checked_sub(1)
+				.and_then(|previous| days.get(previous))
+				.copied(),
+			days.get(index + 1).copied(),
+		);
+		write_file(&dir.join("index.md"), &md)?;
+	}
+	Ok(())
+}
+
+fn write_day_nav(
+	md: &mut String,
+	base_url: &str,
+	previous: Option<(&NaiveDate, &Vec<&Post>)>,
+	next: Option<(&NaiveDate, &Vec<&Post>)>,
+) {
+	if previous.is_none() && next.is_none() {
+		return;
+	}
+	md.push_str("<nav class='post-nav' aria-label='Day navigation'>\n");
+	if let Some((day, posts)) = previous {
+		write_day_nav_link(md, base_url, "prev", "Previous day", day, posts);
+	}
+	if let Some((day, posts)) = next {
+		write_day_nav_link(md, base_url, "next", "Next day", day, posts);
+	}
+	md.push_str("</nav>\n");
+}
+
+fn write_day_nav_link(
+	md: &mut String,
+	base_url: &str,
+	direction: &str,
+	label: &str,
+	day: &NaiveDate,
+	posts: &[&Post],
+) {
+	let url = site_url(base_url, &format!("day/{day}/"));
+	let title = day_archive_title(day, posts);
+	let _ = writeln!(
+		md,
+		"<a class='post-nav__link post-nav__link--{}' href='{}' title='{}'><span>{}</span><strong>{}</strong></a>",
+		encode_single_quoted_attribute(direction),
+		encode_single_quoted_attribute(&url),
+		encode_calendar_title_attribute(&title),
+		encode_text(label),
+		encode_text(&format!("{} {}", month_name(day.month()), day.day()))
+	);
+}
+
+fn write_month_pages(
+	root: &Path,
+	day_posts: &BTreeMap<NaiveDate, Vec<&Post>>,
+	base_url: &str,
+) -> Result<()> {
+	let mut month_posts = BTreeMap::<(i32, u32), Vec<&Post>>::new();
+	for (day, posts) in day_posts {
+		month_posts
+			.entry((day.year(), day.month()))
+			.or_default()
+			.extend(posts.iter().copied());
+	}
+
+	for ((year, month), posts) in month_posts {
+		let month_key = format!("{year}-{month:02}");
+		let dir = root.join("content/month").join(&month_key);
+		let mut md = String::new();
+		md.push_str("+++\n");
+		let _ = writeln!(md, "title = \"{} {year}\"", month_name(month));
+		let _ = writeln!(md, "path = \"month/{month_key}\"");
+		md.push_str("template = \"day.html\"\n");
+		md.push_str("+++\n\n");
+		for post in posts {
+			write_day_post(&mut md, post, base_url);
 		}
 		write_file(&dir.join("index.md"), &md)?;
 	}
 	Ok(())
+}
+
+fn write_day_post(md: &mut String, post: &Post, base_url: &str) {
+	let day = post.date.format("%Y-%m-%d");
+	let post_url = site_url(base_url, &format!("posts/{}/", post.slug));
+	let day_url = site_url(base_url, &format!("day/{day}/"));
+	let time = post.date.format("%H:%M:%S").to_string();
+	let _ = writeln!(md, "<article class='post'>");
+	let _ = writeln!(
+		md,
+		"<h2><a href='{}'>{}</a></h2>",
+		encode_single_quoted_attribute(&post_url),
+		encode_text(&post.title)
+	);
+	let _ = writeln!(
+		md,
+		"<p class='meta'><a href='{}' title='{}'><time>{day}</time></a></p>",
+		encode_single_quoted_attribute(&day_url),
+		encode_single_quoted_attribute(&time),
+	);
+	let _ = writeln!(md, "<div class='content'>");
+	md.push_str(&post.body);
+	md.push_str("\n</div>\n");
+	if !post.tags.is_empty() {
+		md.push_str("<p class='tags'>");
+		for tag in &post.tags {
+			let tag_url = site_url(base_url, &format!("tags/{}/", slugify(tag)));
+			let _ = write!(
+				md,
+				"<a href='{}'>#{}</a>",
+				encode_single_quoted_attribute(&tag_url),
+				encode_text(tag)
+			);
+		}
+		md.push_str("</p>\n");
+	}
+	md.push_str("</article>\n");
+}
+
+fn site_url(base_url: &str, path: &str) -> String {
+	format!(
+		"{}/{}",
+		base_url.trim_end_matches('/'),
+		path.trim_start_matches('/')
+	)
+}
+
+fn write_empty_tags_page(root: &Path) -> Result<()> {
+	write_file(
+		&root.join("content/pages/tags.md"),
+		"+++\ntitle = \"Tags\"\npath = \"tags\"\ntemplate = \"page.html\"\n+++\n\nNo tags found in the synced Evernote cache.\n",
+	)
 }
 
 fn write_podcast(root: &Path, settings: &SiteSettings, posts: &[Post]) -> Result<usize> {
@@ -332,6 +564,7 @@ fn write_templates(root: &Path) -> Result<()> {
 	for (path, body) in [
 		("templates/base.html", BASE_HTML),
 		("templates/index.html", INDEX_HTML),
+		("templates/post.html", POST_HTML),
 		("templates/page.html", PAGE_HTML),
 		("templates/calendar.html", CALENDAR_HTML),
 		("templates/day.html", DAY_HTML),
@@ -342,6 +575,7 @@ fn write_templates(root: &Path) -> Result<()> {
 		("templates/shortcodes/youtube.html", YOUTUBE_SHORTCODE),
 		("templates/shortcodes/vimeo.html", VIMEO_SHORTCODE),
 		("templates/shortcodes/spotify.html", SPOTIFY_SHORTCODE),
+		("templates/shortcodes/genius.html", GENIUS_SHORTCODE),
 		(
 			"templates/shortcodes/apple_podcast.html",
 			APPLE_PODCAST_SHORTCODE,
@@ -359,12 +593,71 @@ fn write_templates(root: &Path) -> Result<()> {
 }
 
 fn toml_escape(s: &str) -> String {
-	s.replace('\\', "\\\\").replace('"', "\\\"")
+	let mut escaped = String::new();
+	for c in s.chars() {
+		match c {
+			'\\' => escaped.push_str("\\\\"),
+			'"' => escaped.push_str("\\\""),
+			'\n' => escaped.push_str("\\n"),
+			'\r' => escaped.push_str("\\r"),
+			'\t' => escaped.push_str("\\t"),
+			c => escaped.push(c),
+		}
+	}
+	escaped
 }
 
 fn option_toml(s: Option<&str>) -> String {
 	s.map(|v| format!("\"{}\"", toml_escape(v)))
 		.unwrap_or_else(|| "false".to_string())
+}
+
+fn post_nav_title(post: &Post) -> String {
+	let body = post_plain_text(&post.body);
+	if body.is_empty() {
+		truncate_chars(post.title.trim(), 1000)
+	} else {
+		truncate_chars(&format!("{}\n{body}", post.title.trim()), 1000)
+	}
+}
+
+fn post_plain_text(body: &str) -> String {
+	let with_line_breaks = block_boundary_regex().replace_all(body, "\n");
+	let without_shortcodes = shortcode_regex().replace_all(&with_line_breaks, " ");
+	let without_tags = html_tag_regex().replace_all(&without_shortcodes, " ");
+	decode_html_entities(&without_tags)
+		.lines()
+		.map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+		.filter(|line| !line.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n")
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+	if text.chars().count() <= max {
+		return text.to_string();
+	}
+	let mut out = text.chars().take(max.saturating_sub(3)).collect::<String>();
+	out.push_str("...");
+	out
+}
+
+fn block_boundary_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| {
+		Regex::new(r"(?i)</?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>")
+			.unwrap()
+	})
+}
+
+fn html_tag_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| Regex::new(r"(?s)<[^>]+>").unwrap())
+}
+
+fn shortcode_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| Regex::new(r"(?s)\{\{.*?\}\}").unwrap())
 }
 
 const BASE_HTML: &str = r#"<!doctype html>
@@ -384,10 +677,13 @@ const BASE_HTML: &str = r#"<!doctype html>
   <header class="site-header">
     <a class="brand" href="{{ config.base_url | safe }}">{{ config.title }}</a>
     <nav>
+      {% if config.extra.has_tags_page %}
       <a href="{{ get_url(path='/tags/') }}">Tags</a>
-      <a href="{{ get_url(path='/calendar/') }}">Calendar</a>
+      {% endif %}
+      {% if current_path == "/calendar/" %}<span>Calendar</span>{% else %}<a href="{{ get_url(path='/calendar/') }}">Calendar</a>{% endif %}
+      {% if config.extra.has_about_page %}
       <a href="{{ get_url(path='/about/') }}">About</a>
-      <a href="{{ get_url(path='/rss.xml', trailing_slash=false) | safe }}">RSS</a>
+      {% endif %}
     </nav>
   {% if config.extra.search_google %}
     <form action="https://www.google.com/search" class="search" method="get"><input name="q" type="search" placeholder="Search"><input name="sitesearch" type="hidden" value="{{ config.base_url }}"></form>
@@ -396,7 +692,6 @@ const BASE_HTML: &str = r#"<!doctype html>
     {% endif %}
   </header>
   <main>{% block content %}{% endblock content %}</main>
-  <footer class="site-footer">Generated from Evernote by Everpublich. RSS, sitemap.xml, static search, tags, calendar, media, and podcast feed are included.</footer>
   {% if config.extra.search_static %}<script src="{{ get_url(path='search_index.en.js') | safe }}"></script><script src="{{ get_url(path='search.js') | safe }}"></script>{% endif %}
   {% if config.extra.has_custom_css %}<link rel="stylesheet" href="{{ get_url(path='custom.css', cachebust=true) }}">{% endif %}
 </body>
@@ -437,9 +732,27 @@ const PAGE_HTML: &str = r#"{% extends "base.html" %}
 {% endblock content %}
 "#;
 
+const POST_HTML: &str = r#"{% extends "base.html" %}
+{% block title %}{{ page.title }} · {{ config.title }}{% endblock title %}
+{% block content %}
+<article class='post'>
+  <h1>{{ page.title }}</h1>
+  {% if page.date %}<p class='meta'><a href='{{ get_url(path="/day/" ~ page.extra.day ~ "/") | safe }}' title='{{ page.date | date(format="%H:%M:%S") }}'><time>{{ page.date | date(format="%Y-%m-%d") }}</time></a></p>{% endif %}
+  <div class='content'>{{ page.content | safe }}</div>
+  {% if page.taxonomies.tags %}<p class='tags'>{% for tag in page.taxonomies.tags %}<a href='{{ get_taxonomy_url(kind="tags", name=tag) | safe }}'>#{{ tag }}</a>{% endfor %}</p>{% endif %}
+</article>
+{% if page.higher or page.lower %}
+<nav class='post-nav' aria-label='Post navigation'>
+  {% if page.higher %}<a class='post-nav__link post-nav__link--prev' href='{{ page.higher.permalink | safe }}' title='{{ page.higher.extra.nav_title }}'><span>Previous</span><strong>{{ page.higher.title }}</strong></a>{% endif %}
+  {% if page.lower %}<a class='post-nav__link post-nav__link--next' href='{{ page.lower.permalink | safe }}' title='{{ page.lower.extra.nav_title }}'><span>Next</span><strong>{{ page.lower.title }}</strong></a>{% endif %}
+</nav>
+{% endif %}
+{% endblock content %}
+"#;
+
 const CALENDAR_HTML: &str = r#"{% extends "base.html" %}
 {% block title %}Calendar · {{ config.title }}{% endblock title %}
-{% block content %}<h1>Calendar</h1>{{ page.content | safe }}{% endblock content %}
+{% block content %}{{ page.content | safe }}{% endblock content %}
 "#;
 
 const DAY_HTML: &str = r#"{% extends "base.html" %}
@@ -468,40 +781,10 @@ const APPLE_PODCAST_SHORTCODE: &str = r#"<div class="embed embed-apple"><iframe 
 const YANDEX_MUSIC_SHORTCODE: &str = r#"<div class="embed embed-yandex"><iframe src="{{ url }}" loading="lazy"></iframe><a href="{{ url }}">Open in Yandex Music</a></div>"#;
 const INSTAGRAM_SHORTCODE: &str = r#"<blockquote class="instagram-media" data-instgrm-permalink="{{ url }}" data-instgrm-version="14"><a href="{{ url }}">View on Instagram</a></blockquote><script async src="//www.instagram.com/embed.js"></script>"#;
 const PINTEREST_SHORTCODE: &str = r#"<a data-pin-do="embedPin" data-pin-width="large" href="{{ url }}">View on Pinterest</a><script async defer src="//assets.pinterest.com/js/pinit.js"></script>"#;
+const GENIUS_SHORTCODE: &str = r#"<div class='embed embed-genius'><div id='rg_embed_link_{{ song_id }}' class='rg_embed_link' data-song-id='{{ song_id }}'><a href='{{ url }}'>Lyrics on Genius</a></div><script crossorigin src='//genius.com/songs/{{ song_id }}/embed.js'></script></div>"#;
 
-const SEARCH_JS: &str = r#"(function () {
-	const input = document.getElementById('site-search');
-	const list = document.getElementById('search-results');
-	if (!input || !list || !window.searchIndex) {
-		return;
-	}
-	input.addEventListener('input', function () {
-		const query = input.value.trim().toLowerCase();
-		list.innerHTML = '';
-		if (!query) {
-			list.hidden = true;
-			return;
-		}
-		const pages = window.searchIndex.documents || {};
-		Object.keys(pages).slice(0, 100).forEach(function (key) {
-			const page = pages[key];
-			const haystack = ((page.title || '') + ' ' + (page.body || '')).toLowerCase();
-			if (haystack.indexOf(query) === -1) {
-				return;
-			}
-			const item = document.createElement('li');
-			const link = document.createElement('a');
-			link.href = page.url;
-			link.textContent = page.title || page.url;
-			item.appendChild(link);
-			list.appendChild(item);
-		});
-		list.hidden = list.children.length === 0;
-	});
-})();
-"#;
-
-const STYLE_CSS: &str = include_str!("../assets/zola/style.css");
+const SEARCH_JS: &str = include_str!("../assets/zola/search.min.js");
+const STYLE_CSS: &str = include_str!("../assets/zola/style.min.css");
 
 #[cfg(test)]
 mod tests {
@@ -550,5 +833,71 @@ mod tests {
 		assert!(dir.path().join("config.toml").exists());
 		assert!(dir.path().join("content/posts/episode/index.md").exists());
 		assert!(dir.path().join("static/podcast.xml").exists());
+		assert!(
+			fs::read_to_string(dir.path().join("templates/shortcodes/genius.html"))
+				.unwrap()
+				.contains("id='rg_embed_link_{{ song_id }}'")
+		);
+	}
+
+	#[test]
+	fn calendar_day_classes_reflect_post_counts() {
+		assert_eq!(calendar_day_class(1), "calendar-day calendar-day--one");
+		assert_eq!(calendar_day_class(2), "calendar-day calendar-day--two");
+		assert_eq!(calendar_day_class(3), "calendar-day calendar-day--many");
+		assert_eq!(post_count_label(1), "1 post");
+		assert_eq!(post_count_label(3), "3 posts");
+	}
+
+	#[test]
+	fn calendar_day_title_includes_post_titles() {
+		let first = Post {
+			guid: "one".into(),
+			slug: "one".into(),
+			title: "First note".into(),
+			date: utc(1_700_000_000),
+			tags: vec![],
+			body: String::new(),
+			resources: vec![],
+			kind: PostKind::BlogPost,
+		};
+		let second = Post {
+			title: "Second note".into(),
+			..first.clone()
+		};
+		let posts = vec![&first, &second];
+
+		assert_eq!(
+			calendar_day_title(&posts),
+			"2 posts\n\nFirst note\n\nSecond note"
+		);
+		assert_eq!(
+			encode_calendar_title_attribute(&calendar_day_title(&posts)),
+			"2 posts&#10;&#10;First note&#10;&#10;Second note"
+		);
+	}
+
+	#[test]
+	fn day_archive_title_uses_month_day_and_post_titles() {
+		let day = NaiveDate::from_ymd_opt(2023, 11, 15).unwrap();
+		let post = Post {
+			guid: "one".into(),
+			slug: "one".into(),
+			title: "Linked Note".into(),
+			date: utc(1_700_086_400),
+			tags: vec![],
+			body: String::new(),
+			resources: vec![],
+			kind: PostKind::BlogPost,
+		};
+
+		assert_eq!(
+			day_archive_title(&day, &[&post]),
+			"November 15\n\nLinked Note"
+		);
+		assert_eq!(
+			encode_calendar_title_attribute(&day_archive_title(&day, &[&post])),
+			"November 15&#10;&#10;Linked Note"
+		);
 	}
 }
