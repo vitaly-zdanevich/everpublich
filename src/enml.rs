@@ -94,8 +94,19 @@ pub fn enml_to_zola_body_with_options(
 		.into_owned();
 
 	out = normalize_evernote_rich_blocks(&out);
+	out = preserve_adjacent_inline_spacing(&out);
 
 	rewrite_internal_links(&out, note_slug_by_guid)
+}
+
+fn preserve_adjacent_inline_spacing(html: &str) -> String {
+	let adjacent_inline_words = Regex::new(
+		r#"(?is)([\p{L}\p{N}])</(b|code|em|i|s|span|strong|u)>\s+<(b|code|em|i|s|span|strong|u)([^>]*)>([\p{L}\p{N}])"#,
+	)
+	.unwrap();
+	adjacent_inline_words
+		.replace_all(html, "$1</$2>&nbsp;<$3$4>$5")
+		.into_owned()
 }
 
 /// Convert Evernote desktop rich blocks that are stored as CSS custom
@@ -352,8 +363,7 @@ fn attach_evernote_comments(html: &str, threads: &[EvernoteThread]) -> String {
 		.enumerate()
 		.filter_map(|(index, thread)| {
 			let range = thread.ranges.first()?;
-			let start = html_byte_for_evernote_offset(html, range.from, OffsetBoundary::Start)?;
-			let end = html_byte_for_evernote_offset(html, range.to, OffsetBoundary::End)?;
+			let (start, end) = evernote_comment_range_bytes(html, *range)?;
 			(end > start).then_some((start, end, index))
 		})
 		.collect::<Vec<_>>();
@@ -403,6 +413,220 @@ fn attach_evernote_comments(html: &str, threads: &[EvernoteThread]) -> String {
 	out
 }
 
+fn evernote_comment_range_bytes(html: &str, range: EvernoteRange) -> Option<(usize, usize)> {
+	let mut best = None;
+	let mut fallback = None;
+	for profile in [
+		OffsetProfile::Default,
+		OffsetProfile::TableCompact,
+		OffsetProfile::TableRich,
+	] {
+		let Some(start) =
+			html_byte_for_evernote_offset(html, range.from, OffsetBoundary::Start, profile)
+		else {
+			continue;
+		};
+		let Some(end) = html_byte_for_evernote_offset(html, range.to, OffsetBoundary::End, profile)
+		else {
+			continue;
+		};
+		if end <= start {
+			continue;
+		}
+		if let Some(score) = evernote_comment_selection_score(html, start, end) {
+			if best.is_none_or(|(_, _, best_score)| score > best_score) {
+				best = Some((start, end, score));
+			}
+			continue;
+		}
+		fallback.get_or_insert((start, end));
+	}
+	if let Some((start, end, score)) = best {
+		if score < 15
+			&& let Some(word) = nearby_whole_word_selection(html, start, end, range.to - range.from)
+		{
+			return Some(word);
+		}
+		return Some((start, end));
+	}
+	fallback
+}
+
+fn evernote_comment_selection_score(html: &str, start: usize, end: usize) -> Option<i32> {
+	let selection = &html[start..end];
+	if selection.contains('<') {
+		return None;
+	}
+	let decoded = decode_html_entities(selection);
+	let trimmed = decoded.trim();
+	if trimmed.is_empty() {
+		return None;
+	}
+
+	let mut score = 10;
+	if trimmed.len() == decoded.len() {
+		score += 2;
+	} else {
+		score -= 2;
+	}
+	if decoded.chars().any(char::is_whitespace) {
+		score -= 2;
+	}
+	let first = trimmed.chars().next()?;
+	let last = trimmed.chars().next_back()?;
+	if first.is_alphanumeric()
+		&& previous_visible_char(html, start).is_some_and(char::is_alphanumeric)
+	{
+		score -= 5;
+	} else {
+		score += 3;
+	}
+	if last.is_alphanumeric() && next_visible_char(html, end).is_some_and(char::is_alphanumeric) {
+		score -= 5;
+	} else {
+		score += 3;
+	}
+	Some(score)
+}
+
+fn previous_visible_char(html: &str, index: usize) -> Option<char> {
+	let mut end = index;
+	while end > 0 {
+		let before = &html[..end];
+		let character = before.chars().next_back()?;
+		if character == '>' {
+			end = before.rfind('<')?;
+			continue;
+		}
+		if character == ';'
+			&& let Some(entity_start) = before.rfind('&')
+			&& end - entity_start <= 64
+		{
+			let decoded = decode_html_entities(&html[entity_start..end]);
+			return decoded.chars().next_back();
+		}
+		return Some(character);
+	}
+	None
+}
+
+fn next_visible_char(html: &str, index: usize) -> Option<char> {
+	let mut start = index;
+	while start < html.len() {
+		if html[start..].starts_with('<') {
+			start = html[start..]
+				.find('>')
+				.map(|position| start + position + 1)?;
+			continue;
+		}
+		if html[start..].starts_with('&')
+			&& let Some(semicolon) = html[start..].find(';').filter(|position| *position <= 64)
+		{
+			let end = start + semicolon + 1;
+			let decoded = decode_html_entities(&html[start..end]);
+			return decoded.chars().next();
+		}
+		return html[start..].chars().next();
+	}
+	None
+}
+
+fn nearby_whole_word_selection(
+	html: &str,
+	start: usize,
+	end: usize,
+	target_chars: usize,
+) -> Option<(usize, usize)> {
+	let center = start + (end - start) / 2;
+	let mut best = None;
+	let mut current = None::<VisibleWord>;
+	let mut index = 0usize;
+	while index < html.len() {
+		if html[index..].starts_with('<') {
+			finish_visible_word(&mut current, &mut best, center, target_chars);
+			index = html[index..]
+				.find('>')
+				.map(|position| index + position + 1)?;
+			continue;
+		}
+
+		let (next_index, character) = if html[index..].starts_with('&') {
+			if let Some(semicolon) = html[index..].find(';').filter(|position| *position <= 64) {
+				let next_index = index + semicolon + 1;
+				let decoded = decode_html_entities(&html[index..next_index]);
+				(next_index, decoded.chars().next().unwrap_or(' '))
+			} else {
+				let character = html[index..].chars().next()?;
+				(index + character.len_utf8(), character)
+			}
+		} else {
+			let character = html[index..].chars().next()?;
+			(index + character.len_utf8(), character)
+		};
+
+		if character.is_alphanumeric() {
+			match &mut current {
+				Some(word) => {
+					word.end = next_index;
+					word.characters += 1;
+				}
+				None => {
+					current = Some(VisibleWord {
+						start: index,
+						end: next_index,
+						characters: 1,
+					});
+				}
+			}
+		} else {
+			finish_visible_word(&mut current, &mut best, center, target_chars);
+		}
+		index = next_index;
+	}
+	finish_visible_word(&mut current, &mut best, center, target_chars);
+	best.map(|candidate: WordCandidate| (candidate.start, candidate.end))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VisibleWord {
+	start: usize,
+	end: usize,
+	characters: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WordCandidate {
+	start: usize,
+	end: usize,
+	distance: usize,
+}
+
+fn finish_visible_word(
+	current: &mut Option<VisibleWord>,
+	best: &mut Option<WordCandidate>,
+	center: usize,
+	target_chars: usize,
+) {
+	let Some(word) = current.take() else {
+		return;
+	};
+	if word.characters != target_chars {
+		return;
+	}
+	let word_center = word.start + (word.end - word.start) / 2;
+	let distance = word_center.abs_diff(center);
+	if distance > 160 {
+		return;
+	}
+	if best.is_none_or(|candidate| distance < candidate.distance) {
+		*best = Some(WordCandidate {
+			start: word.start,
+			end: word.end,
+			distance,
+		});
+	}
+}
+
 fn evernote_comment_insertion_point(html: &str, from: usize) -> usize {
 	let block_end =
 		Regex::new(r#"(?is)</(?:blockquote|div|h1|h2|h3|h4|h5|h6|li|p|pre|td|th|tr)>"#).unwrap();
@@ -418,6 +642,47 @@ enum OffsetBoundary {
 	End,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OffsetProfile {
+	Default,
+	TableCompact,
+	TableRich,
+}
+
+impl OffsetProfile {
+	fn hr_units(self) -> usize {
+		match self {
+			Self::Default | Self::TableCompact => 0,
+			Self::TableRich => 2,
+		}
+	}
+
+	fn table_cell_units(self) -> usize {
+		match self {
+			Self::Default => 0,
+			Self::TableCompact | Self::TableRich => 3,
+		}
+	}
+
+	fn table_units(self) -> usize {
+		match self {
+			Self::Default => 0,
+			Self::TableCompact | Self::TableRich => 3,
+		}
+	}
+
+	fn table_section_units(self) -> usize {
+		match self {
+			Self::Default | Self::TableCompact => 0,
+			Self::TableRich => 2,
+		}
+	}
+
+	fn counts_table_structure(self) -> bool {
+		!matches!(self, Self::Default)
+	}
+}
+
 /// Map Evernote comment offsets to byte positions in the rendered HTML.
 ///
 /// Current Evernote comments use rich-text document offsets where normal
@@ -428,6 +693,7 @@ fn html_byte_for_evernote_offset(
 	html: &str,
 	target: usize,
 	boundary: OffsetBoundary,
+	profile: OffsetProfile,
 ) -> Option<usize> {
 	let mut offset = 0usize;
 	let mut index = 0usize;
@@ -438,8 +704,12 @@ fn html_byte_for_evernote_offset(
 				.find('>')
 				.map(|position| index + position + 1)?;
 			let tag = &html[index + 1..end - 1];
-			let mut increment = evernote_tag_offset_units(tag);
-			if pending_br_line_break && evernote_is_closing_block_tag(tag) {
+			if let Some(block_end) = everpublich_source_url_block_end(html, index, tag) {
+				index = block_end;
+				continue;
+			}
+			let mut increment = evernote_tag_offset_units(tag, profile);
+			if pending_br_line_break && evernote_is_offset_block_closer(tag, profile) {
 				increment = 0;
 				pending_br_line_break = false;
 			} else if evernote_is_br_tag(tag) {
@@ -479,11 +749,37 @@ fn html_byte_for_evernote_offset(
 	(target <= offset).then_some(html.len())
 }
 
-fn evernote_tag_offset_units(tag: &str) -> usize {
-	if evernote_is_br_tag(tag) || evernote_is_closing_block_tag(tag) {
-		2
-	} else {
-		0
+fn everpublich_source_url_block_end(html: &str, index: usize, tag: &str) -> Option<usize> {
+	let (name, closing) = evernote_tag_name(tag)?;
+	if closing || name != "p" || !tag.contains("data-everpublich-source-url") {
+		return None;
+	}
+	html[index..]
+		.to_ascii_lowercase()
+		.find("</p>")
+		.map(|position| index + position + "</p>".len())
+}
+
+fn evernote_tag_offset_units(tag: &str, profile: OffsetProfile) -> usize {
+	let Some((name, closing)) = evernote_tag_name(tag) else {
+		return 0;
+	};
+	if name == "br" {
+		return 2;
+	}
+	if name == "hr" {
+		return profile.hr_units();
+	}
+	if !closing {
+		return 0;
+	}
+	match name.as_str() {
+		"blockquote" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "p" | "pre"
+		| "tr" => 2,
+		"td" | "th" => profile.table_cell_units(),
+		"table" => profile.table_units(),
+		"tbody" | "thead" | "tfoot" => profile.table_section_units(),
+		_ => 0,
 	}
 }
 
@@ -502,6 +798,18 @@ fn evernote_is_closing_block_tag(tag: &str) -> bool {
 					| "h6" | "li" | "p"
 					| "pre" | "tr"
 			)
+	})
+}
+
+fn evernote_is_offset_block_closer(tag: &str, profile: OffsetProfile) -> bool {
+	evernote_tag_name(tag).is_some_and(|(name, closing)| {
+		closing
+			&& (evernote_is_closing_block_tag(tag)
+				|| profile.counts_table_structure()
+					&& matches!(
+						name.as_str(),
+						"td" | "th" | "table" | "tbody" | "thead" | "tfoot"
+					))
 	})
 }
 
@@ -1129,6 +1437,51 @@ mod tests {
 		let target_at = body.find("evernote-comment-target").unwrap();
 		let comment_at = body.find("Hi, this is my comment").unwrap();
 		assert!(comment_at > target_at);
+
+		let body_with_source = enml_to_zola_body(
+			r#"<en-note><p data-everpublich-source-url="true"><a href="https://example.com/source">https://example.com/source</a></p><div style="--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:3,\&quot;to\&quot;:11}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"></div><div>A</div><div>comments.</div></en-note>"#,
+			&[],
+			&HashMap::new(),
+		);
+
+		assert!(
+			body_with_source.contains(r#"<span class="evernote-comment-target">comments</span>"#),
+			"{body_with_source}"
+		);
+		assert!(
+			body_with_source.contains(
+				r#"<div><span class="evernote-comment-target">comments</span>.</div><aside class="evernote-comments""#
+			),
+			"{body_with_source}"
+		);
+	}
+
+	#[test]
+	fn maps_evernote_comment_offsets_near_real_rich_text_marker() {
+		let body = enml_to_zola_body(
+			r#"<en-note><p data-everpublich-source-url="true"><a href="https://archive.org/details/indiegamewebsite-com--dump">https://archive.org/details/indiegamewebsite-com--dump</a></p><div><br/></div><div><br/></div><div style="--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:267,\&quot;to\&quot;:275}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"></div><div><a href="https://genius.com/Bonnie-tyler-total-eclipse-of-the-heart-lyrics">https://genius.com/Bonnie-tyler-total-eclipse-of-the-heart-lyrics</a></div><div><br/></div><hr/><div><br/></div><table><tbody><tr><td><div>aa</div></td><td><div>bb</div></td></tr><tr><td><div>xx</div></td><td><div>yy</div></td></tr></tbody></table><div><br/></div><div><br/></div><div><span style="color:red">My</span> <span style="color:blue">colorful</span> <span style="color:green">text</span></div><div><span><span style="--en-markholder:true;"><br/></span></span></div><h2>My<span> h2 and green text</span></h2><div><br/></div><div><b>Bold</b> <i>italic </i><u>under</u><s> strike</s></div><div><s><span style="--en-markholder:true;"><br/></span></s></div><div>Part of this text is <span style="--en-highlight:yellow;background-color: #fdf3d0;">highlighted</span>, should be nice.</div><div><br/></div><div>On this like we are testing comments.</div><div><br/></div><div><br/></div><div><br/></div><div>Quote:</div></en-note>"#,
+			&[],
+			&HashMap::new(),
+		);
+
+		assert!(
+			body.contains(r#"<span class="evernote-comment-target">comments</span>"#),
+			"{body}"
+		);
+		assert!(
+			body.contains(r#"<div>On this like we are testing <span class="evernote-comment-target">comments</span>.</div><aside class="evernote-comments""#),
+			"{body}"
+		);
+	}
+
+	#[test]
+	fn comment_offset_fallback_prefers_nearby_whole_word() {
+		let html = "<div>On this like we are testing comments.</div>";
+		let start = html.find("g comments").unwrap();
+		let end = start + "g commen".len();
+		let (word_start, word_end) = nearby_whole_word_selection(html, start, end, 8).unwrap();
+
+		assert_eq!(&html[word_start..word_end], "comments");
 	}
 
 	#[test]

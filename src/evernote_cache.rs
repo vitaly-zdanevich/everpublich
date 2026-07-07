@@ -2574,6 +2574,7 @@ fn rich_text_to_enml(
 	if let Some(url) = source_url.filter(|url| !url.trim().is_empty()) {
 		enml = prepend_source_url_to_enml(&enml, url);
 	}
+	enml = restore_adjacent_inline_spacing(&enml);
 	append_missing_resources_enml(&enml, resources)
 }
 
@@ -2662,7 +2663,7 @@ fn push_resource_enml(enml: &mut String, resource: &Resource) {
 
 fn push_source_url_enml(enml: &mut String, url: &str) {
 	let href = encode_double_quoted_attribute(url);
-	enml.push_str("<p><a href=\"");
+	enml.push_str("<p data-everpublich-source-url=\"true\"><a href=\"");
 	enml.push_str(&href);
 	enml.push_str("\">");
 	enml.push_str(&encode_text(url));
@@ -3351,7 +3352,9 @@ mod tests {
 			&[],
 		);
 
-		assert!(enml.contains(r#"<p><a href="https://example.com/source">"#));
+		assert!(enml.contains(
+			r#"<p data-everpublich-source-url="true"><a href="https://example.com/source">"#
+		));
 		assert!(enml.contains("```\nUPDATE activities SET tag = replace(tag, 'v', '');\n```"));
 	}
 
@@ -3562,6 +3565,21 @@ mod tests {
 	}
 
 	#[test]
+	fn rich_text_enml_makes_inline_spacing_minifier_safe() {
+		let enml = rich_text_to_enml(
+			r#"<en-note><div><span style="color:red">My</span> <span style="color:blue">colorful</span> <span style="color:green">text</span></div></en-note>"#,
+			None,
+			None,
+			&[],
+		);
+
+		assert!(
+			enml.contains(r#">My</span>&nbsp;<span style="color:blue">colorful</span>&nbsp;<span style="color:green">text</span>"#),
+			"{enml}"
+		);
+	}
+
+	#[test]
 	fn maps_rich_text_inline_code_marks() {
 		use yrs::types::Attrs;
 		use yrs::{
@@ -3609,7 +3627,9 @@ mod tests {
 			&resources,
 		);
 
-		assert!(enml.contains(r#"<p><a href="https://example.com/source">"#));
+		assert!(enml.contains(
+			r#"<p data-everpublich-source-url="true"><a href="https://example.com/source">"#
+		));
 		assert!(enml.contains("<div>Body</div>"));
 		assert!(!enml.contains("slug:body"));
 		assert!(enml.contains(r#"<en-media type="audio/mpeg" hash="abc123"/>"#));

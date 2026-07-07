@@ -32,6 +32,8 @@ fn zola_build_renders_public_html() {
 	let public = dir.path().join("public");
 	let index = read(&public, "index.html");
 	assert_contains(&index, "Rich ENML formatting is preserved.");
+	assert_contains(&index, "My</span>\u{a0}<span");
+	assert_contains(&index, "colorful</span>\u{a0}<span");
 	assert_contains(&index, "www.youtube.com/embed/dQw4w9WgXcQ");
 	assert_contains(&index, "id=site-search");
 	assert_contains(&index, "<ul hidden id=search-results>");
@@ -503,7 +505,7 @@ fn note_fixtures() -> Vec<Note> {
 			created: utc(1_700_000_000),
 			updated: utc(1_700_000_100),
 			tags: vec!["intro".into()],
-			enml: r#"<en-note><p><span style="font-size: 20px; color: #207a4d">Rich ENML formatting is preserved.</span></p><p><a href="evernote:///view/1/s1/22222222-2222-2222-2222-222222222222/22222222-2222-2222-2222-222222222222/">Linked note</a></p><ul style="--en-todo:true"><li style="--en-checked:false"><div>This in unckecked</div></li><li style="--en-checked:true"><div>This is checked</div></li></ul><div style="--en-toggle:true; --en-isCollapsed:false;--en-requiredFeatures:&quot;[&bsol;&quot;toggle&bsol;&quot;]&quot;"><div style="--en-toggleSummary:true">This is the name of my toggle</div><div style="--en-toggleContent:true"><div>This is inside my toggle</div></div></div><div style="--en-callout:true; --en-emoji:💡;--en-requiredFeatures:&quot;[&bsol;&quot;callout&bsol;&quot;]&quot;"><div>This is my callout example</div></div><p>https://youtu.be/dQw4w9WgXcQ</p><en-media type="image/jpeg" hash="img"/><en-media type="application/pdf" hash="pdf"/></en-note>"#.into(),
+			enml: r#"<en-note><p><span style="font-size: 20px; color: #207a4d">Rich ENML formatting is preserved.</span></p><p><span style="color:red">My</span> <span style="color:blue">colorful</span> <span style="color:green">text</span></p><p><a href="evernote:///view/1/s1/22222222-2222-2222-2222-222222222222/22222222-2222-2222-2222-222222222222/">Linked note</a></p><ul style="--en-todo:true"><li style="--en-checked:false"><div>This in unckecked</div></li><li style="--en-checked:true"><div>This is checked</div></li></ul><div style="--en-toggle:true; --en-isCollapsed:false;--en-requiredFeatures:&quot;[&bsol;&quot;toggle&bsol;&quot;]&quot;"><div style="--en-toggleSummary:true">This is the name of my toggle</div><div style="--en-toggleContent:true"><div>This is inside my toggle</div></div></div><div style="--en-callout:true; --en-emoji:💡;--en-requiredFeatures:&quot;[&bsol;&quot;callout&bsol;&quot;]&quot;"><div>This is my callout example</div></div><p>https://youtu.be/dQw4w9WgXcQ</p><en-media type="image/jpeg" hash="img"/><en-media type="application/pdf" hash="pdf"/></en-note>"#.into(),
 			resources: vec![
 				Resource {
 					hash: "img".into(),

@@ -1223,7 +1223,7 @@ where
 	if !enabled {
 		return markdown.to_string();
 	}
-	let markdown = expand_rich_link_blocks(markdown);
+	let markdown = expand_rich_link_blocks_with(markdown, &expand_url);
 	let paragraph_url = Regex::new(r#"(?is)<p>\s*(https?://[^<\s]+)\s*</p>"#).unwrap();
 	let markdown = paragraph_url
 		.replace_all(&markdown, |caps: &regex::Captures| {
@@ -1244,10 +1244,6 @@ where
 		})
 		.collect::<Vec<_>>()
 		.join("\n")
-}
-
-fn expand_standalone_url(url: &str, fallback: &str) -> String {
-	expand_standalone_url_with_disabled(url, fallback, &Default::default())
 }
 
 fn expand_standalone_url_with_disabled(
@@ -3532,22 +3528,23 @@ fn normalized_host(url: &Url) -> Option<String> {
 	)
 }
 
-fn expand_rich_link_blocks(markdown: &str) -> String {
-	let rich_link = Regex::new(
-		r#"(?is)<(?:p|div)\b[^>]*>\s*<a\b([^>]*)>\s*(https?://[^<\s]+)\s*</a>\s*</(?:p|div)>"#,
-	)
-	.unwrap();
+fn expand_rich_link_blocks_with<F>(markdown: &str, expand_url: &F) -> String
+where
+	F: Fn(&str, &str) -> String,
+{
+	let rich_link =
+		Regex::new(r#"(?is)<(?:p|div)\b[^>]*>\s*<a\b([^>]*)>(.*?)</a>\s*</(?:p|div)>"#).unwrap();
 	rich_link
 		.replace_all(markdown, |caps: &regex::Captures| {
 			let attrs = caps.get(1).unwrap().as_str();
-			let text_url = clean_url(caps.get(2).unwrap().as_str());
 			let Some(href) = href_attr(attrs) else {
 				return caps.get(0).unwrap().as_str().to_string();
 			};
-			if clean_url(&href) != text_url {
+			let url = clean_url(&href);
+			if Url::parse(url).is_err() {
 				return caps.get(0).unwrap().as_str().to_string();
 			}
-			expand_standalone_url(text_url, caps.get(0).unwrap().as_str())
+			expand_url(url, caps.get(0).unwrap().as_str())
 		})
 		.into_owned()
 }
@@ -3639,6 +3636,15 @@ mod tests {
 	#[test]
 	fn expands_rich_link_blocks() {
 		let html = r#"<div><a href=https://www.youtube.com/watch?v=e2_qbL4TiDg rev=en_rl_none>https://www.youtube.com/watch?v=e2_qbL4TiDg</a></div>"#;
+		let out = expand_bare_links(html, true);
+
+		assert_eq!(out, r#"{{ youtube(id="e2_qbL4TiDg") }}"#);
+	}
+
+	#[test]
+	fn expands_labeled_standalone_anchor_blocks() {
+		let html =
+			r#"<div><a href="https://www.youtube.com/watch?v=e2_qbL4TiDg">YouTube</a></div>"#;
 		let out = expand_bare_links(html, true);
 
 		assert_eq!(out, r#"{{ youtube(id="e2_qbL4TiDg") }}"#);
