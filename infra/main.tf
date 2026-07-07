@@ -9,6 +9,7 @@ locals {
   cloudfront_free_tier_bytes_per_day = floor(var.cloudfront_free_tier_bytes_per_month / 30)
   cloudwatch_namespace               = "Everpublich"
   cloudfront_url                     = var.create_cloudfront_distribution ? "https://${aws_cloudfront_distribution.sites[0].domain_name}/" : ""
+  generated_sites_cloudfront_url     = contains(var.cloudfront_aliases, "*.${var.base_domain}") ? "" : local.cloudfront_url
   sites_bucket_name                  = var.sites_bucket_name != "" ? var.sites_bucket_name : "${var.project_name}-${data.aws_caller_identity.current.account_id}-${var.aws_region}-sites"
   ubuntu_image_arch                  = var.instance_architecture == "arm64" ? "arm64" : "amd64"
   zola_target                        = var.instance_architecture == "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu"
@@ -373,7 +374,7 @@ resource "aws_instance" "app" {
   ipv6_address_count          = var.enable_ipv6 ? 1 : 0
   key_name                    = aws_key_pair.app.key_name
   subnet_id                   = aws_subnet.public.id
-  user_data_replace_on_change = true
+  user_data_replace_on_change = false
   vpc_security_group_ids      = [aws_security_group.app.id]
 
   metadata_options {
@@ -406,7 +407,7 @@ resource "aws_instance" "app" {
     run_evernote_on_boot       = var.run_evernote_on_boot
     s3_bucket                  = aws_s3_bucket.sites.bucket
     cloudfront_distribution_id = var.create_cloudfront_distribution ? aws_cloudfront_distribution.sites[0].id : ""
-    cloudfront_url             = local.cloudfront_url
+    cloudfront_url             = local.generated_sites_cloudfront_url
     cloudwatch_namespace       = local.cloudwatch_namespace
     sqlite_schema_b64          = base64encode(file("${path.module}/sqlite-schema.sql"))
     install_cloudwatch_agent   = var.install_cloudwatch_agent_on_boot

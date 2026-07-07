@@ -185,15 +185,22 @@ write_files:
       fi
 
       if [ -d "$EVERPUBLICH_SITES_DIR" ]; then
-        aws s3 sync "$EVERPUBLICH_SITES_DIR/" "s3://$EVERPUBLICH_S3_BUCKET/" \
-          --delete \
-          --exclude '.evernote-api-resources/*' \
-          --cache-control 'public,max-age=3600'
         work_dir="$(mktemp -d)"
         cleanup() {
           rm -rf "$work_dir"
         }
         trap cleanup EXIT
+        publish_root="$work_dir/public"
+        mkdir -p "$publish_root"
+        for site_dir in "$EVERPUBLICH_SITES_DIR"/*; do
+          [ -d "$site_dir/public" ] || continue
+          site="$(basename "$site_dir")"
+          mkdir -p "$publish_root/$site"
+          ln -s "$site_dir/public" "$publish_root/$site/public"
+        done
+        aws s3 sync "$publish_root/" "s3://$EVERPUBLICH_S3_BUCKET/" \
+          --delete \
+          --cache-control 'public,max-age=3600'
         content_type() {
           case "$1" in
             *.html|*.htm) printf '%s\n' 'text/html; charset=utf-8' ;;
@@ -209,16 +216,13 @@ write_files:
             *) printf '%s\n' 'application/octet-stream' ;;
           esac
         }
-        find -L "$EVERPUBLICH_SITES_DIR" -type f -print0 | while IFS= read -r -d '' file; do
-          relative="$(realpath --relative-to="$EVERPUBLICH_SITES_DIR" "$file")"
-          case "$relative" in
-            .evernote-api-resources/*) continue ;;
-          esac
+        find -L "$publish_root" -type f -print0 | while IFS= read -r -d '' file; do
+          relative="$${file#"$publish_root"/}"
           case "$relative" in
             *.html|*.htm|*.css|*.js|*.mjs|*.json|*.webmanifest|*.xml|*.rss|*.atom|*.svg|*.txt|*.text|*.log|*.csv|*.tsv|*.wasm) ;;
             *) continue ;;
           esac
-          compressed="$work_dir/$relative"
+          compressed="$work_dir/br/$relative"
           mkdir -p "$(dirname "$compressed")"
           brotli --force --quality=11 --output="$compressed" "$file"
           aws s3 cp "$compressed" "s3://$EVERPUBLICH_S3_BUCKET/$relative" \
@@ -227,6 +231,9 @@ write_files:
             --content-type "$(content_type "$relative")" \
             --only-show-errors
         done
+        find -H "$EVERPUBLICH_SITES_DIR" -mindepth 1 -maxdepth 1 -type d \
+          ! -name '.evernote-api-resources' \
+          -exec rm -rf {} +
       fi
 
       if [ -n "$EVERPUBLICH_CLOUDFRONT_DISTRIBUTION_ID" ]; then
