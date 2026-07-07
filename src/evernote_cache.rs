@@ -6,7 +6,9 @@
 //! from the renderer and from the admin database.
 
 use crate::evernote::notes_to_posts;
-use crate::evernote_api::{DownloadedLinkedNotebook, DownloadedNote, EvernoteApiClient};
+use crate::evernote_api::{
+	DownloadedLinkedNotebook, DownloadedNote, EvernoteApiClient, NoteDownloadCache, NoteSummary,
+};
 use crate::models::{
 	BuildState, EvernoteAccessMode, IndexMode, Note, Post, PostKind, Resource, SearchMode,
 	SiteSettings, UserItem,
@@ -20,6 +22,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use html_escape::{decode_html_entities, encode_double_quoted_attribute, encode_text};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -341,19 +344,17 @@ fn read_api_sites(
 	token: &str,
 ) -> Result<Vec<CacheSite>> {
 	let download_root = api_download_root(&options.sites_dir);
-	if download_root.exists() {
-		fs::remove_dir_all(&download_root)
-			.with_context(|| format!("failed to remove {}", download_root.display()))?;
-	}
 	fs::create_dir_all(&download_root)
 		.with_context(|| format!("failed to create {}", download_root.display()))?;
+	let mut cache = ApiNoteDownloadCache::new(&download_root);
 
 	let client = EvernoteApiClient::new(
 		token.to_string(),
 		Some(options.evernote_user_store_url.clone()),
 		options.evernote_note_store_url.clone(),
 	)?;
-	let notebooks = client.download_linked_notebooks(None)?;
+	let notebooks = client.download_linked_notebooks_with_cache(None, &mut cache)?;
+	prune_api_download_cache(&download_root, &notebooks)?;
 	notebooks
 		.into_iter()
 		.filter_map(|notebook| {
@@ -368,6 +369,364 @@ fn read_api_sites(
 
 fn api_download_root(sites_dir: &Path) -> PathBuf {
 	sites_dir.join(".evernote-api-resources")
+}
+
+#[derive(Debug, Clone)]
+struct ApiNoteDownloadCache {
+	root: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApiCachedNote {
+	guid: String,
+	title: Option<String>,
+	content: Option<String>,
+	created: Option<i64>,
+	updated: Option<i64>,
+	source_url: Option<String>,
+	tag_names: Vec<String>,
+	resources: Vec<ApiCachedResource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApiCachedResource {
+	cache_hash: String,
+	body_hash_hex: Option<String>,
+	guid: Option<String>,
+	mime: String,
+	size: Option<i32>,
+	file_name: Option<String>,
+	body_file: String,
+}
+
+impl ApiNoteDownloadCache {
+	fn new(root: &Path) -> Self {
+		Self {
+			root: root.to_path_buf(),
+		}
+	}
+
+	fn note_dir(&self, notebook_guid: &str, note_guid: &str) -> PathBuf {
+		self.root
+			.join(safe_file_name(notebook_guid, "notebook"))
+			.join(safe_file_name(note_guid, "note"))
+	}
+
+	fn note_json_path(&self, notebook_guid: &str, note_guid: &str) -> PathBuf {
+		self.note_dir(notebook_guid, note_guid).join("note.json")
+	}
+}
+
+impl NoteDownloadCache for ApiNoteDownloadCache {
+	fn get_cached_note(
+		&mut self,
+		notebook_guid: &str,
+		metadata: &NoteSummary,
+	) -> Result<Option<DownloadedNote>> {
+		let Some(updated) = metadata.updated else {
+			return Ok(None);
+		};
+		let note_json = self.note_json_path(notebook_guid, &metadata.guid);
+		if !note_json.exists() {
+			return Ok(None);
+		}
+		let bytes = fs::read(&note_json)
+			.with_context(|| format!("failed to read {}", note_json.display()))?;
+		let cached: ApiCachedNote = serde_json::from_slice(&bytes)
+			.with_context(|| format!("failed to parse {}", note_json.display()))?;
+		if cached.guid != metadata.guid || cached.updated != Some(updated) {
+			return Ok(None);
+		}
+		let Some(content) = cached.content.clone().filter(|content| !content.is_empty()) else {
+			return Ok(None);
+		};
+		let resource_dir = self
+			.note_dir(notebook_guid, &metadata.guid)
+			.join("resources");
+		let mut resources = Vec::new();
+		for resource in &cached.resources {
+			let body_path = resource_dir.join(&resource.body_file);
+			let body = match fs::read(&body_path) {
+				Ok(body) if !body.is_empty() => body,
+				Ok(_) => return Ok(None),
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+				Err(error) => {
+					return Err(error)
+						.with_context(|| format!("failed to read {}", body_path.display()));
+				}
+			};
+			resources.push(cached_resource_to_edam(resource, body));
+		}
+		let tag_names = cached.tag_names.clone();
+		Ok(Some(DownloadedNote {
+			note: cached_note_to_edam(cached, notebook_guid, content, resources),
+			tag_names,
+		}))
+	}
+
+	fn put_cached_note(&mut self, notebook_guid: &str, note: &DownloadedNote) -> Result<()> {
+		let Some(guid) = note
+			.note
+			.guid
+			.as_deref()
+			.filter(|guid| !guid.trim().is_empty())
+		else {
+			return Ok(());
+		};
+		let note_dir = self.note_dir(notebook_guid, guid);
+		let resource_dir = note_dir.join("resources");
+		fs::create_dir_all(&resource_dir)
+			.with_context(|| format!("failed to create {}", resource_dir.display()))?;
+
+		let mut resources = Vec::new();
+		for resource in note.note.resources.as_deref().unwrap_or_default() {
+			let Some(data) = &resource.data else {
+				continue;
+			};
+			let Some(body) = data.body.as_deref().filter(|body| !body.is_empty()) else {
+				continue;
+			};
+			let cache_hash = api_resource_cache_hash(resource);
+			let body_file = safe_file_name(&format!("{cache_hash}.body"), "resource.body");
+			fs::write(resource_dir.join(&body_file), body).with_context(|| {
+				format!(
+					"failed to write cached Evernote resource {}",
+					resource_dir.join(&body_file).display()
+				)
+			})?;
+			resources.push(ApiCachedResource {
+				cache_hash,
+				body_hash_hex: data.body_hash.as_deref().map(hex_lower),
+				guid: resource.guid.clone(),
+				mime: resource
+					.mime
+					.as_deref()
+					.map(str::trim)
+					.filter(|mime| !mime.is_empty())
+					.unwrap_or("application/octet-stream")
+					.to_string(),
+				size: data.size.or_else(|| i32::try_from(body.len()).ok()),
+				file_name: resource
+					.attributes
+					.as_ref()
+					.and_then(|attributes| attributes.file_name.clone()),
+				body_file,
+			});
+		}
+
+		let cached = ApiCachedNote {
+			guid: guid.to_string(),
+			title: note.note.title.clone(),
+			content: note.note.content.clone(),
+			created: note.note.created,
+			updated: note.note.updated,
+			source_url: note
+				.note
+				.attributes
+				.as_ref()
+				.and_then(|attributes| attributes.source_u_r_l.clone()),
+			tag_names: note.tag_names.clone(),
+			resources,
+		};
+		fs::write(
+			note_dir.join("note.json"),
+			serde_json::to_vec_pretty(&cached)?,
+		)
+		.with_context(|| format!("failed to write {}", note_dir.join("note.json").display()))?;
+		Ok(())
+	}
+}
+
+fn cached_note_to_edam(
+	cached: ApiCachedNote,
+	notebook_guid: &str,
+	content: String,
+	resources: Vec<evernote_edam::types::Resource>,
+) -> evernote_edam::types::Note {
+	evernote_edam::types::Note {
+		guid: Some(cached.guid),
+		title: cached.title,
+		content: Some(content),
+		content_hash: None,
+		content_length: None,
+		created: cached.created,
+		updated: cached.updated,
+		deleted: None,
+		active: Some(true),
+		update_sequence_num: None,
+		notebook_guid: Some(notebook_guid.to_string()),
+		tag_guids: None,
+		resources: Some(resources),
+		attributes: Some(note_attributes_with_source_url(cached.source_url)),
+		tag_names: Some(cached.tag_names),
+		shared_notes: None,
+		restrictions: None,
+		limits: None,
+	}
+}
+
+fn cached_resource_to_edam(
+	resource: &ApiCachedResource,
+	body: Vec<u8>,
+) -> evernote_edam::types::Resource {
+	evernote_edam::types::Resource {
+		guid: resource
+			.guid
+			.clone()
+			.or_else(|| Some(resource.cache_hash.clone())),
+		note_guid: None,
+		data: Some(evernote_edam::types::Data {
+			body_hash: resource.body_hash_hex.as_deref().and_then(hex_to_bytes),
+			size: resource
+				.size
+				.or_else(|| i32::try_from(body.len()).ok())
+				.map(|size| size.max(0)),
+			body: Some(body),
+		}),
+		mime: Some(resource.mime.clone()),
+		width: None,
+		height: None,
+		duration: None,
+		active: Some(true),
+		recognition: None,
+		attributes: Some(resource_attributes_with_file_name(
+			resource.file_name.clone(),
+		)),
+		update_sequence_num: None,
+		alternate_data: None,
+	}
+}
+
+fn note_attributes_with_source_url(
+	source_url: Option<String>,
+) -> evernote_edam::types::NoteAttributes {
+	evernote_edam::types::NoteAttributes {
+		subject_date: None,
+		latitude: None,
+		longitude: None,
+		altitude: None,
+		author: None,
+		source: None,
+		source_u_r_l: source_url,
+		source_application: None,
+		share_date: None,
+		reminder_order: None,
+		reminder_done_time: None,
+		reminder_time: None,
+		place_name: None,
+		content_class: None,
+		application_data: None,
+		last_edited_by: None,
+		classifications: None,
+		creator_id: None,
+		last_editor_id: None,
+		shared_with_business: None,
+		conflict_source_note_guid: None,
+		note_title_quality: None,
+	}
+}
+
+fn resource_attributes_with_file_name(
+	file_name: Option<String>,
+) -> evernote_edam::types::ResourceAttributes {
+	evernote_edam::types::ResourceAttributes {
+		source_u_r_l: None,
+		timestamp: None,
+		latitude: None,
+		longitude: None,
+		altitude: None,
+		camera_make: None,
+		camera_model: None,
+		client_will_index: None,
+		reco_type: None,
+		file_name,
+		attachment: Some(true),
+		application_data: None,
+	}
+}
+
+fn api_resource_cache_hash(resource: &evernote_edam::types::Resource) -> String {
+	resource
+		.data
+		.as_ref()
+		.and_then(|data| data.body_hash.as_deref())
+		.map(hex_lower)
+		.filter(|hash| !hash.is_empty())
+		.or_else(|| resource.guid.as_deref().map(slugify))
+		.unwrap_or_else(|| "resource".to_string())
+}
+
+fn hex_to_bytes(value: &str) -> Option<Vec<u8>> {
+	if !value.len().is_multiple_of(2) {
+		return None;
+	}
+	let mut bytes = Vec::with_capacity(value.len() / 2);
+	for index in (0..value.len()).step_by(2) {
+		let byte = u8::from_str_radix(&value[index..index + 2], 16).ok()?;
+		bytes.push(byte);
+	}
+	Some(bytes)
+}
+
+fn prune_api_download_cache(root: &Path, notebooks: &[DownloadedLinkedNotebook]) -> Result<()> {
+	let allowed_notebooks = notebooks
+		.iter()
+		.map(|notebook| safe_file_name(&notebook.notebook_guid, "notebook"))
+		.collect::<BTreeSet<_>>();
+	if root.exists() {
+		for entry in
+			fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+		{
+			let entry = entry?;
+			if !entry.file_type()?.is_dir() {
+				continue;
+			}
+			let name = entry.file_name().to_string_lossy().to_string();
+			if !allowed_notebooks.contains(&name) {
+				fs::remove_dir_all(entry.path()).with_context(|| {
+					format!(
+						"failed to remove stale API cache {}",
+						entry.path().display()
+					)
+				})?;
+			}
+		}
+	}
+	for notebook in notebooks {
+		prune_api_notebook_cache(root, notebook)?;
+	}
+	Ok(())
+}
+
+fn prune_api_notebook_cache(root: &Path, notebook: &DownloadedLinkedNotebook) -> Result<()> {
+	let notebook_dir = root.join(safe_file_name(&notebook.notebook_guid, "notebook"));
+	if !notebook_dir.exists() {
+		return Ok(());
+	}
+	let allowed_notes = notebook
+		.notes
+		.iter()
+		.filter_map(|note| note.note.guid.as_deref())
+		.map(|guid| safe_file_name(guid, "note"))
+		.collect::<BTreeSet<_>>();
+	for entry in fs::read_dir(&notebook_dir)
+		.with_context(|| format!("failed to read {}", notebook_dir.display()))?
+	{
+		let entry = entry?;
+		if !entry.file_type()?.is_dir() {
+			continue;
+		}
+		let name = entry.file_name().to_string_lossy().to_string();
+		if !allowed_notes.contains(&name) {
+			fs::remove_dir_all(entry.path()).with_context(|| {
+				format!(
+					"failed to remove stale API note cache {}",
+					entry.path().display()
+				)
+			})?;
+		}
+	}
+	Ok(())
 }
 
 fn existing_user_id_for_api_notebook(
@@ -2615,6 +2974,116 @@ mod tests {
 	}
 
 	#[test]
+	fn api_note_download_cache_reuses_current_note_and_resources() {
+		let temp = tempfile::tempdir().unwrap();
+		let mut cache = ApiNoteDownloadCache::new(temp.path());
+		let mut note = api_test_note(
+			"note-guid",
+			"API note",
+			"<en-note><div>Hello API</div></en-note>",
+		);
+		note.resources = Some(vec![api_test_text_resource()]);
+		cache
+			.put_cached_note(
+				"notebook-guid",
+				&DownloadedNote {
+					note,
+					tag_names: vec!["api-tag".into()],
+				},
+			)
+			.unwrap();
+
+		let metadata = NoteSummary {
+			guid: "note-guid".into(),
+			title: Some("API note".into()),
+			created: Some(1_700_000_000_000),
+			updated: Some(1_700_000_100_000),
+			largest_resource_mime: Some("text/plain".into()),
+			largest_resource_size: Some(11),
+		};
+		let cached = cache
+			.get_cached_note("notebook-guid", &metadata)
+			.unwrap()
+			.unwrap();
+
+		assert_eq!(cached.tag_names, vec!["api-tag"]);
+		assert_eq!(cached.note.title.as_deref(), Some("API note"));
+		assert_eq!(
+			cached.note.tag_names.as_deref(),
+			Some(["api-tag".to_string()].as_slice())
+		);
+		let resource = cached.note.resources.as_ref().unwrap().first().unwrap();
+		assert_eq!(resource.mime.as_deref(), Some("text/plain"));
+		assert_eq!(
+			resource
+				.attributes
+				.as_ref()
+				.and_then(|attributes| attributes.file_name.as_deref()),
+			Some("readme.txt")
+		);
+		assert_eq!(
+			resource.data.as_ref().and_then(|data| data.body.as_deref()),
+			Some(b"hello world".as_slice())
+		);
+
+		let stale_metadata = NoteSummary {
+			updated: Some(1_700_000_100_001),
+			..metadata
+		};
+		assert!(
+			cache
+				.get_cached_note("notebook-guid", &stale_metadata)
+				.unwrap()
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn api_note_download_cache_misses_when_resource_body_is_missing() {
+		let temp = tempfile::tempdir().unwrap();
+		let mut cache = ApiNoteDownloadCache::new(temp.path());
+		let mut note = api_test_note(
+			"note-guid",
+			"API note",
+			"<en-note><div>Hello API</div></en-note>",
+		);
+		note.resources = Some(vec![api_test_text_resource()]);
+		cache
+			.put_cached_note(
+				"notebook-guid",
+				&DownloadedNote {
+					note,
+					tag_names: Vec::new(),
+				},
+			)
+			.unwrap();
+		let resource_dir = temp
+			.path()
+			.join(safe_file_name("notebook-guid", "notebook"))
+			.join(safe_file_name("note-guid", "note"))
+			.join("resources");
+		for entry in fs::read_dir(resource_dir).unwrap() {
+			fs::remove_file(entry.unwrap().path()).unwrap();
+		}
+
+		let metadata = NoteSummary {
+			guid: "note-guid".into(),
+			title: Some("API note".into()),
+			created: Some(1_700_000_000_000),
+			updated: Some(1_700_000_100_000),
+			largest_resource_mime: Some("text/plain".into()),
+			largest_resource_size: Some(11),
+		};
+
+		assert!(
+			cache
+				.get_cached_note("notebook-guid", &metadata)
+				.unwrap()
+				.is_none()
+		);
+	}
+
+	#[test]
 	fn keeps_api_downloads_in_hidden_sites_subdirectory() {
 		assert_eq!(
 			api_download_root(Path::new("/var/cache/everpublich/sites")),
@@ -3166,6 +3635,40 @@ mod tests {
 			shared_notes: None,
 			restrictions: None,
 			limits: None,
+		}
+	}
+
+	fn api_test_text_resource() -> edam_types::Resource {
+		edam_types::Resource {
+			guid: Some("resource-guid".into()),
+			note_guid: Some("note-guid".into()),
+			data: Some(edam_types::Data {
+				body_hash: Some(vec![0xab, 0xcd]),
+				size: Some(11),
+				body: Some(b"hello world".to_vec()),
+			}),
+			mime: Some("text/plain".into()),
+			width: None,
+			height: None,
+			duration: None,
+			active: Some(true),
+			recognition: None,
+			attributes: Some(edam_types::ResourceAttributes {
+				source_u_r_l: None,
+				timestamp: None,
+				latitude: None,
+				longitude: None,
+				altitude: None,
+				camera_make: None,
+				camera_model: None,
+				client_will_index: None,
+				reco_type: None,
+				file_name: Some("readme.txt".into()),
+				attachment: Some(true),
+				application_data: None,
+			}),
+			update_sequence_num: None,
+			alternate_data: None,
 		}
 	}
 

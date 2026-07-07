@@ -35,6 +35,36 @@ pub trait ThriftHttpClient: Clone + Send + Sync + 'static {
 	fn post_thrift(&self, url: &str, body: Vec<u8>) -> Result<Vec<u8>, String>;
 }
 
+/// Persistent note cache used to avoid downloading unchanged note bodies and
+/// resource data on every rebuild.
+pub trait NoteDownloadCache {
+	/// Return a cached full note when metadata proves it is still current.
+	fn get_cached_note(
+		&mut self,
+		notebook_guid: &str,
+		metadata: &NoteSummary,
+	) -> Result<Option<DownloadedNote>>;
+
+	/// Store a freshly downloaded full note for later rebuilds.
+	fn put_cached_note(&mut self, notebook_guid: &str, note: &DownloadedNote) -> Result<()>;
+}
+
+struct NoopNoteDownloadCache;
+
+impl NoteDownloadCache for NoopNoteDownloadCache {
+	fn get_cached_note(
+		&mut self,
+		_notebook_guid: &str,
+		_metadata: &NoteSummary,
+	) -> Result<Option<DownloadedNote>> {
+		Ok(None)
+	}
+
+	fn put_cached_note(&mut self, _notebook_guid: &str, _note: &DownloadedNote) -> Result<()> {
+		Ok(())
+	}
+}
+
 #[derive(Clone)]
 /// Blocking reqwest-backed implementation used by CLI probes.
 pub struct ReqwestThriftHttpClient {
@@ -139,6 +169,16 @@ where
 		&self,
 		max_notes_per_notebook: Option<i32>,
 	) -> Result<Vec<DownloadedLinkedNotebook>> {
+		let mut cache = NoopNoteDownloadCache;
+		self.download_linked_notebooks_with_cache(max_notes_per_notebook, &mut cache)
+	}
+
+	/// Download linked notebooks while reusing cached unchanged notes.
+	pub fn download_linked_notebooks_with_cache(
+		&self,
+		max_notes_per_notebook: Option<i32>,
+		cache: &mut impl NoteDownloadCache,
+	) -> Result<Vec<DownloadedLinkedNotebook>> {
 		let mut account_note_store = self.note_store_client()?;
 		let linked_notebooks = account_note_store
 			.list_linked_notebooks(self.token.clone())
@@ -147,7 +187,11 @@ where
 			})?;
 		let mut downloaded = Vec::new();
 		for linked in linked_notebooks {
-			downloaded.push(self.download_linked_notebook(linked, max_notes_per_notebook)?);
+			downloaded.push(self.download_linked_notebook(
+				linked,
+				max_notes_per_notebook,
+				cache,
+			)?);
 		}
 		Ok(downloaded)
 	}
@@ -231,6 +275,7 @@ where
 		&self,
 		linked: LinkedNotebook,
 		max_notes_per_notebook: Option<i32>,
+		cache: &mut impl NoteDownloadCache,
 	) -> Result<DownloadedLinkedNotebook> {
 		let note_store_url = required_non_empty(
 			linked.note_store_url.clone(),
@@ -253,6 +298,7 @@ where
 			&mut authenticated,
 			&notebook_guid,
 			max_notes_per_notebook,
+			cache,
 		)?;
 
 		Ok(DownloadedLinkedNotebook {
@@ -379,6 +425,7 @@ fn download_shared_notebook_notes<C>(
 	authenticated: &mut AuthenticatedSharedNotebook<C>,
 	notebook_guid: &str,
 	max_notes_per_notebook: Option<i32>,
+	cache: &mut impl NoteDownloadCache,
 ) -> Result<Vec<DownloadedNote>>
 where
 	C: ThriftHttpClient,
@@ -411,6 +458,15 @@ where
 		}
 
 		for metadata in note_list.notes {
+			let summary = NoteSummary::from_metadata(&metadata);
+			if let Some(note) = cache
+				.get_cached_note(notebook_guid, &summary)
+				.with_context(|| format!("failed to read cached Evernote note {}", metadata.guid))?
+			{
+				downloaded.push(note);
+				continue;
+			}
+
 			let note = authenticated
 				.note_store
 				.get_note(
@@ -433,7 +489,11 @@ where
 					.get_note_tag_names(authenticated.token.clone(), metadata.guid.clone())
 					.unwrap_or_default()
 			});
-			downloaded.push(DownloadedNote { note, tag_names });
+			let downloaded_note = DownloadedNote { note, tag_names };
+			cache
+				.put_cached_note(notebook_guid, &downloaded_note)
+				.with_context(|| format!("failed to cache Evernote note {}", metadata.guid))?;
+			downloaded.push(downloaded_note);
 		}
 
 		offset += limit;
@@ -562,12 +622,18 @@ pub struct NoteSummary {
 
 impl From<evernote_edam::note_store::NoteMetadata> for NoteSummary {
 	fn from(note: evernote_edam::note_store::NoteMetadata) -> Self {
+		Self::from_metadata(&note)
+	}
+}
+
+impl NoteSummary {
+	fn from_metadata(note: &evernote_edam::note_store::NoteMetadata) -> Self {
 		Self {
-			guid: note.guid,
-			title: note.title,
+			guid: note.guid.clone(),
+			title: note.title.clone(),
 			created: note.created,
 			updated: note.updated,
-			largest_resource_mime: note.largest_resource_mime,
+			largest_resource_mime: note.largest_resource_mime.clone(),
 			largest_resource_size: note.largest_resource_size,
 		}
 	}
