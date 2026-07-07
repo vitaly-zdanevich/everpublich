@@ -194,6 +194,7 @@ fn convert_evernote_callouts(html: &str) -> String {
 /// a CSS custom property on an otherwise empty element.
 fn convert_evernote_comments(html: &str) -> String {
 	let mut out = html.to_string();
+	let mut threads = Vec::new();
 	for tag in ["div", "span"] {
 		let comment_marker = Regex::new(&format!(
 			r#"(?is)<{tag}\b(?P<attrs>[^>]*--en-threads\s*:[^>]*)>\s*(?:<br\s*/?>)?\s*</{tag}>"#
@@ -202,19 +203,27 @@ fn convert_evernote_comments(html: &str) -> String {
 		out = comment_marker
 			.replace_all(&out, |caps: &Captures| {
 				let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
-				let Some(threads) = evernote_threads_from_attrs(attrs) else {
+				let Some(found) = evernote_threads_from_attrs(attrs) else {
 					return caps.get(0).unwrap().as_str().to_string();
 				};
-				render_evernote_comments(&threads)
+				threads.extend(found);
+				String::new()
 			})
 			.into_owned();
 	}
-	out
+	attach_evernote_comments(&out, &threads)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EvernoteThread {
 	comments: Vec<EvernoteComment>,
+	ranges: Vec<EvernoteRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EvernoteRange {
+	from: usize,
+	to: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,9 +285,22 @@ fn parse_evernote_threads(value: &Value) -> Vec<EvernoteThread> {
 				.flatten()
 				.filter_map(parse_evernote_comment)
 				.collect::<Vec<_>>();
-			(!comments.is_empty()).then_some(EvernoteThread { comments })
+			let ranges = thread
+				.get("ranges")
+				.and_then(Value::as_array)
+				.into_iter()
+				.flatten()
+				.filter_map(parse_evernote_range)
+				.collect::<Vec<_>>();
+			(!comments.is_empty()).then_some(EvernoteThread { comments, ranges })
 		})
 		.collect()
+}
+
+fn parse_evernote_range(value: &Value) -> Option<EvernoteRange> {
+	let from = json_usize(value, &["from", "start"])?;
+	let to = json_usize(value, &["to", "end"])?;
+	(to > from).then_some(EvernoteRange { from, to })
 }
 
 fn parse_evernote_comment(value: &Value) -> Option<EvernoteComment> {
@@ -318,9 +340,205 @@ fn json_i64(value: &Value, keys: &[&str]) -> Option<i64> {
 		.find_map(|key| value.get(*key).and_then(Value::as_i64))
 }
 
+fn json_usize(value: &Value, keys: &[&str]) -> Option<usize> {
+	keys.iter()
+		.find_map(|key| value.get(*key).and_then(Value::as_u64))
+		.and_then(|value| usize::try_from(value).ok())
+}
+
+fn attach_evernote_comments(html: &str, threads: &[EvernoteThread]) -> String {
+	let mut placements = threads
+		.iter()
+		.enumerate()
+		.filter_map(|(index, thread)| {
+			let range = thread.ranges.first()?;
+			let start = html_byte_for_evernote_offset(html, range.from, OffsetBoundary::Start)?;
+			let end = html_byte_for_evernote_offset(html, range.to, OffsetBoundary::End)?;
+			(end > start).then_some((start, end, index))
+		})
+		.collect::<Vec<_>>();
+	placements.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+	let mut out = html.to_string();
+	let mut placed = HashSet::new();
+	let mut cursor = 0;
+	while cursor < placements.len() {
+		let (start, end, _) = placements[cursor];
+		let mut group = Vec::new();
+		while cursor < placements.len()
+			&& placements[cursor].0 == start
+			&& placements[cursor].1 == end
+		{
+			let index = placements[cursor].2;
+			group.push(threads[index].clone());
+			placed.insert(index);
+			cursor += 1;
+		}
+		let comment = render_evernote_comments(&group);
+		let selected = out[start..end].to_string();
+		if selected.contains('<') {
+			let insertion = evernote_comment_insertion_point(&out, end);
+			out.insert_str(insertion, &comment);
+		} else {
+			let target = format!(
+				r#"<span class="evernote-comment-target">{}</span>"#,
+				selected
+			);
+			out.replace_range(start..end, &target);
+			let insertion = evernote_comment_insertion_point(&out, start + target.len());
+			out.insert_str(insertion, &comment);
+		}
+	}
+
+	let fallback = threads
+		.iter()
+		.enumerate()
+		.filter(|(index, _)| !placed.contains(index))
+		.map(|(_, thread)| thread)
+		.cloned()
+		.collect::<Vec<_>>();
+	if !fallback.is_empty() {
+		out.push_str(&render_evernote_comments(&fallback));
+	}
+	out
+}
+
+fn evernote_comment_insertion_point(html: &str, from: usize) -> usize {
+	let block_end =
+		Regex::new(r#"(?is)</(?:blockquote|div|h1|h2|h3|h4|h5|h6|li|p|pre|td|th|tr)>"#).unwrap();
+	block_end
+		.find(&html[from..])
+		.map(|matched| from + matched.end())
+		.unwrap_or(html.len())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OffsetBoundary {
+	Start,
+	End,
+}
+
+/// Map Evernote comment offsets to byte positions in the rendered HTML.
+///
+/// Current Evernote comments use rich-text document offsets where normal
+/// characters count as one unit and block separators behave like CRLF, taking
+/// two units. The source HTML only has tags, so this scanner recreates that
+/// lightweight text model without stripping the markup we need to preserve.
+fn html_byte_for_evernote_offset(
+	html: &str,
+	target: usize,
+	boundary: OffsetBoundary,
+) -> Option<usize> {
+	let mut offset = 0usize;
+	let mut index = 0usize;
+	let mut pending_br_line_break = false;
+	while index < html.len() {
+		if html[index..].starts_with('<') {
+			let end = html[index..]
+				.find('>')
+				.map(|position| index + position + 1)?;
+			let tag = &html[index + 1..end - 1];
+			let mut increment = evernote_tag_offset_units(tag);
+			if pending_br_line_break && evernote_is_closing_block_tag(tag) {
+				increment = 0;
+				pending_br_line_break = false;
+			} else if evernote_is_br_tag(tag) {
+				pending_br_line_break = true;
+			}
+			if increment == 0 {
+				index = end;
+				continue;
+			}
+			if !evernote_is_br_tag(tag) {
+				pending_br_line_break = false;
+			}
+			match boundary {
+				OffsetBoundary::Start if target <= offset => return Some(index),
+				OffsetBoundary::End if target <= offset => return Some(index),
+				OffsetBoundary::Start if target < offset + increment => return Some(index),
+				OffsetBoundary::End if target <= offset + increment => return Some(end),
+				_ => {}
+			}
+			offset += increment;
+			index = end;
+			continue;
+		}
+
+		let (next_index, increment) = html_text_token(html, index)?;
+		pending_br_line_break = false;
+		match boundary {
+			OffsetBoundary::Start if target <= offset => return Some(index),
+			OffsetBoundary::End if target <= offset => return Some(index),
+			OffsetBoundary::Start if target < offset + increment => return Some(index),
+			OffsetBoundary::End if target <= offset + increment => return Some(next_index),
+			_ => {}
+		}
+		offset += increment;
+		index = next_index;
+	}
+	(target <= offset).then_some(html.len())
+}
+
+fn evernote_tag_offset_units(tag: &str) -> usize {
+	if evernote_is_br_tag(tag) || evernote_is_closing_block_tag(tag) {
+		2
+	} else {
+		0
+	}
+}
+
+fn evernote_is_br_tag(tag: &str) -> bool {
+	evernote_tag_name(tag).is_some_and(|(name, _)| name == "br")
+}
+
+fn evernote_is_closing_block_tag(tag: &str) -> bool {
+	evernote_tag_name(tag).is_some_and(|(name, closing)| {
+		closing
+			&& matches!(
+				name.as_str(),
+				"blockquote"
+					| "div" | "h1" | "h2"
+					| "h3" | "h4" | "h5"
+					| "h6" | "li" | "p"
+					| "pre" | "tr"
+			)
+	})
+}
+
+fn evernote_tag_name(tag: &str) -> Option<(String, bool)> {
+	let trimmed = tag.trim_start();
+	if trimmed.starts_with("!--") {
+		return None;
+	}
+	let closing = trimmed.starts_with('/');
+	let name_start = usize::from(closing);
+	let name = trimmed[name_start..]
+		.split(|character: char| {
+			character.is_ascii_whitespace() || character == '/' || character == '>'
+		})
+		.next()
+		.unwrap_or_default()
+		.to_ascii_lowercase();
+	(!name.is_empty()).then_some((name, closing))
+}
+
+fn html_text_token(html: &str, index: usize) -> Option<(usize, usize)> {
+	let rest = &html[index..];
+	if rest.starts_with('&')
+		&& let Some(semicolon) = rest.find(';').filter(|position| *position <= 64)
+	{
+		let end = index + semicolon + 1;
+		let decoded = decode_html_entities(&html[index..end]);
+		let units = decoded.chars().count().max(1);
+		return Some((end, units));
+	}
+	let character = rest.chars().next()?;
+	Some((index + character.len_utf8(), 1))
+}
+
 fn render_evernote_comments(threads: &[EvernoteThread]) -> String {
 	let mut out = String::from(
-		r#"<aside class="evernote-comments" aria-label="Evernote comments"><p class="evernote-comments__title">Comments</p><ol>"#,
+		r#"<aside class="evernote-comments" aria-label="Evernote comments"><p class="evernote-comments__title">Comment</p><ol>"#,
 	);
 	for thread in threads {
 		for comment in &thread.comments {
@@ -879,17 +1097,27 @@ mod tests {
 
 	#[test]
 	fn renders_evernote_comments_metadata() {
-		let style = r#"--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:267,\&quot;to\&quot;:275}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"#;
+		let style = r#"--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:3,\&quot;to\&quot;:11}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"#;
 		let raw = evernote_style_raw_value(style, "--en-threads").unwrap();
 		let decoded = decode_evernote_style_json(&raw).unwrap_or_else(|| panic!("{raw}"));
 		assert!(decoded.contains(r#""comments""#), "{decoded}");
 
 		let body = enml_to_zola_body(
-			r#"<en-note><div style="--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:267,\&quot;to\&quot;:275}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"></div><div>On this line we are testing comments.</div></en-note>"#,
+			r#"<en-note><div style="--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:3,\&quot;to\&quot;:11}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"></div><div>A</div><div>comments.</div></en-note>"#,
 			&[],
 			&HashMap::new(),
 		);
 
+		assert!(
+			body.contains(r#"<span class="evernote-comment-target">comments</span>"#),
+			"{body}"
+		);
+		assert!(
+			body.contains(
+				r#"<div><span class="evernote-comment-target">comments</span>.</div><aside class="evernote-comments""#
+			),
+			"{body}"
+		);
 		assert!(
 			body.contains(r#"<aside class="evernote-comments" aria-label="Evernote comments">"#),
 			"{body}"
@@ -898,7 +1126,9 @@ mod tests {
 		assert!(body.contains("UTC"), "{body}");
 		assert!(body.contains("edited"));
 		assert!(!body.contains("--en-threads"));
-		assert!(body.contains("On this line we are testing comments."));
+		let target_at = body.find("evernote-comment-target").unwrap();
+		let comment_at = body.find("Hi, this is my comment").unwrap();
+		assert!(comment_at > target_at);
 	}
 
 	#[test]

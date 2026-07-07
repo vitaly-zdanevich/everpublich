@@ -6,14 +6,16 @@ use percent_encoding::{
 	AsciiSet, CONTROLS, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode,
 };
 use regex::Regex;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::redirect::Policy;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use url::Url;
+use url::{Host, Url};
 
 const PATH_SEGMENT_ENCODE: &AsciiSet = &CONTROLS
 	.add(b' ')
@@ -524,8 +526,8 @@ fn genius_api(url: &str) -> Option<GeniusResolution> {
 }
 
 fn genius_page(url: &str) -> Option<GeniusResolution> {
-	let html = genius_client()?
-		.get(url)
+	let client = genius_client()?;
+	let html = safe_get(&client, url)?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -538,6 +540,7 @@ fn genius_page(url: &str) -> Option<GeniusResolution> {
 fn genius_client() -> Option<Client> {
 	Client::builder()
 		.timeout(Duration::from_secs(10))
+		.redirect(Policy::none())
 		.user_agent("Mozilla/5.0 (compatible; Everpublich/0.2)")
 		.build()
 		.ok()
@@ -793,7 +796,8 @@ fn reddit_subreddit_embed_url(subreddit: &str) -> String {
 }
 
 fn reddit_subreddit_widget_available(embed_url: &str) -> Option<bool> {
-	let response = metadata_client()?.get(embed_url).send().ok()?;
+	let client = metadata_client()?;
+	let response = safe_get(&client, embed_url)?.send().ok()?;
 	Some(response.status().is_success())
 }
 
@@ -907,8 +911,8 @@ fn reddit_post_oembed_status(url: &Url) -> Option<u16> {
 
 fn reddit_post_alive_from_json(url: &Url) -> Option<bool> {
 	let json_url = reddit_post_json_url(url)?;
-	let response: Value = metadata_client()?
-		.get(json_url)
+	let client = metadata_client()?;
+	let response: Value = safe_get(&client, &json_url)?
 		.query(&[("raw_json", "1")])
 		.send()
 		.ok()?
@@ -989,6 +993,7 @@ fn is_reddit_subreddit(value: &str) -> bool {
 }
 
 fn mastodon_embed(url: &Url) -> Option<String> {
+	ssrf_safe_url(url).then_some(())?;
 	if mastodon_status_url(url) {
 		return mastodon_post_embed(url);
 	}
@@ -1063,8 +1068,8 @@ fn mastodon_status_embed_url(url: &Url) -> Option<String> {
 
 fn mastodon_oembed_json(url: &Url) -> Option<Value> {
 	let endpoint = mastodon_api_endpoint(url, "/api/oembed")?;
-	metadata_client()?
-		.get(endpoint)
+	let client = metadata_client()?;
+	safe_get(&client, &endpoint)?
 		.query(&[("url", url.as_str())])
 		.send()
 		.ok()?
@@ -1084,8 +1089,8 @@ fn mastodon_profile_card(url: &Url, acct: &str) -> Option<String> {
 
 fn mastodon_account(url: &Url, acct: &str) -> Option<Value> {
 	let endpoint = mastodon_api_endpoint(url, "/api/v1/accounts/lookup")?;
-	metadata_client()?
-		.get(endpoint)
+	let client = metadata_client()?;
+	safe_get(&client, &endpoint)?
 		.query(&[("acct", acct)])
 		.send()
 		.ok()?
@@ -1186,6 +1191,7 @@ fn mastodon_host(url: &Url) -> Option<String> {
 fn same_host_url(original: &Url, candidate: &str) -> Option<String> {
 	let parsed = Url::parse(candidate).ok()?;
 	(matches!(parsed.scheme(), "http" | "https")
+		&& ssrf_safe_url(&parsed)
 		&& normalized_host(&parsed) == normalized_host(original))
 	.then(|| parsed.to_string())
 }
@@ -1592,15 +1598,14 @@ where
 
 fn fetch_link_status(url: &Url) -> Option<u16> {
 	let client = metadata_client()?;
-	let response = client.head(url.as_str()).send().ok();
+	let response = safe_head(&client, url)?.send().ok();
 	if let Some(response) = response {
 		let status = response.status();
 		if !matches!(status.as_u16(), 405 | 403 | 429 | 500..=599) {
 			return Some(status.as_u16());
 		}
 	}
-	client
-		.get(url.as_str())
+	safe_get(&client, url.as_str())?
 		.header(reqwest::header::RANGE, "bytes=0-0")
 		.send()
 		.ok()
@@ -1660,7 +1665,7 @@ fn apple_podcast_link_problem(url: &Url) -> Option<String> {
 
 fn mastodon_link_problem(url: &Url) -> Option<String> {
 	let host = normalized_host(url)?;
-	if !looks_like_mastodon(&host) || !mastodon_status_url(url) {
+	if !looks_like_mastodon(&host) || !mastodon_status_url(url) || !ssrf_safe_url(url) {
 		return None;
 	}
 	let endpoint = mastodon_api_endpoint(url, "/api/oembed")?;
@@ -1674,8 +1679,8 @@ fn mastodon_link_problem(url: &Url) -> Option<String> {
 
 fn oembed_status(cache_key: &str, endpoint: &str, query: &[(&str, &str)]) -> Option<u16> {
 	cached_probe_status(cache_key, || {
-		metadata_client()?
-			.get(endpoint)
+		let client = metadata_client()?;
+		safe_get(&client, endpoint)?
 			.query(query)
 			.send()
 			.ok()
@@ -2102,11 +2107,130 @@ fn format_bytes(size: u64) -> String {
 fn metadata_client() -> Option<Client> {
 	Client::builder()
 		.timeout(Duration::from_secs(10))
+		.redirect(Policy::none())
 		.user_agent(
 			"Everpublich/0.4 (https://github.com/vitaly-zdanevich/everpublich; zdanevich.vitaly@ya.ru)",
 		)
 		.build()
 		.ok()
+}
+
+/// Build a GET request only after the URL passes the outbound SSRF guard.
+fn safe_get(client: &Client, url: &str) -> Option<RequestBuilder> {
+	let parsed = Url::parse(url).ok()?;
+	ssrf_safe_url(&parsed).then(|| client.get(url))
+}
+
+/// Build a HEAD request only after the URL passes the outbound SSRF guard.
+fn safe_head(client: &Client, url: &Url) -> Option<RequestBuilder> {
+	ssrf_safe_url(url).then(|| client.head(url.as_str()))
+}
+
+/// Keep server-side metadata fetches away from local, private, and cloud
+/// metadata addresses. Notes are user-controlled, so link probes must fail
+/// closed unless the target is a public HTTP(S) endpoint.
+fn ssrf_safe_url(url: &Url) -> bool {
+	if !matches!(url.scheme(), "http" | "https") {
+		return false;
+	}
+	let Some(host) = url.host() else {
+		return false;
+	};
+	let host = match host {
+		Host::Ipv4(ip) => return public_ipv4_for_outbound(ip),
+		Host::Ipv6(ip) => return public_ipv6_for_outbound(ip),
+		Host::Domain(host) => host,
+	};
+	if local_host_name(host) {
+		return false;
+	}
+	let Some(port) = url.port_or_known_default() else {
+		return false;
+	};
+	let Ok(addresses) = (host, port).to_socket_addrs() else {
+		return false;
+	};
+	let addresses = addresses.collect::<Vec<_>>();
+	!addresses.is_empty()
+		&& addresses
+			.iter()
+			.all(|address| public_ip_for_outbound(address.ip()))
+}
+
+fn local_host_name(host: &str) -> bool {
+	let host = host.trim_end_matches('.').to_ascii_lowercase();
+	matches!(host.as_str(), "localhost" | "localhost.localdomain") || host.ends_with(".localhost")
+}
+
+fn public_ip_for_outbound(ip: IpAddr) -> bool {
+	match ip {
+		IpAddr::V4(ip) => public_ipv4_for_outbound(ip),
+		IpAddr::V6(ip) => public_ipv6_for_outbound(ip),
+	}
+}
+
+fn public_ipv4_for_outbound(ip: Ipv4Addr) -> bool {
+	let [a, b, c, d] = ip.octets();
+	if a == 0
+		|| a == 10
+		|| a == 127
+		|| a >= 224
+		|| (a == 100 && (64..=127).contains(&b))
+		|| (a == 169 && b == 254)
+		|| (a == 172 && (16..=31).contains(&b))
+		|| (a == 192 && b == 168)
+		|| (a == 192 && b == 0 && c == 0)
+		|| (a == 192 && b == 0 && c == 2)
+		|| (a == 198 && (b == 18 || b == 19))
+		|| (a == 198 && b == 51 && c == 100)
+		|| (a == 203 && b == 0 && c == 113)
+	{
+		return false;
+	}
+	!(a == 255 && b == 255 && c == 255 && d == 255)
+}
+
+fn public_ipv6_for_outbound(ip: Ipv6Addr) -> bool {
+	if let Some(mapped) = ipv4_mapped_ipv6(ip) {
+		return public_ipv4_for_outbound(mapped);
+	}
+	let segments = ip.segments();
+	if ip.is_unspecified() || ip.is_loopback() {
+		return false;
+	}
+	if segments[0] & 0xfe00 == 0xfc00 {
+		return false;
+	}
+	if segments[0] & 0xffc0 == 0xfe80 {
+		return false;
+	}
+	if segments[0] & 0xff00 == 0xff00 {
+		return false;
+	}
+	if segments[0] == 0x2001 && segments[1] == 0x0db8 {
+		return false;
+	}
+	if segments[0] == 0x2002 {
+		return false;
+	}
+	if segments[0] == 0x0100 && segments[1] == 0 {
+		return false;
+	}
+	true
+}
+
+fn ipv4_mapped_ipv6(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+	let segments = ip.segments();
+	if segments[..5] == [0, 0, 0, 0, 0] && segments[5] == 0xffff {
+		Some(Ipv4Addr::new(
+			(segments[6] >> 8) as u8,
+			segments[6] as u8,
+			(segments[7] >> 8) as u8,
+			segments[7] as u8,
+		))
+	} else {
+		None
+	}
 }
 
 fn musicbrainz_title(url: &Url) -> Option<String> {
@@ -2403,8 +2527,8 @@ fn github_repo(url: &Url) -> Option<(String, String)> {
 }
 
 fn source_file_title(provider: &str, label: &str, raw_url: &str) -> Option<String> {
-	let body = metadata_client()?
-		.get(raw_url)
+	let client = metadata_client()?;
+	let body = safe_get(&client, raw_url)?
 		.header(reqwest::header::RANGE, "bytes=0-65535")
 		.send()
 		.ok()?
@@ -2721,8 +2845,8 @@ fn wikidata_statement_value(statement: &Value, labels: &HashMap<String, String>)
 
 fn rutracker_title(url: &Url) -> Option<String> {
 	rutracker_topic_id(url)?;
-	let html = metadata_client()?
-		.get(url.as_str())
+	let client = metadata_client()?;
+	let html = safe_get(&client, url.as_str())?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -2796,8 +2920,8 @@ fn rutracker_comment_count(html: &str) -> Option<u64> {
 
 fn gentoo_package_title(url: &Url) -> Option<String> {
 	let atom = gentoo_package_atom(url)?;
-	let html = metadata_client()?
-		.get(url.as_str())
+	let client = metadata_client()?;
+	let html = safe_get(&client, url.as_str())?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -2881,8 +3005,8 @@ fn lastfm_title(url: &Url) -> Option<String> {
 			return Some(title);
 		}
 	}
-	let html = metadata_client()?
-		.get(url.as_str())
+	let client = metadata_client()?;
+	let html = safe_get(&client, url.as_str())?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -2991,8 +3115,8 @@ fn lastfm_catalogue_value(html: &str, label: &str) -> Option<String> {
 
 fn mdn_title(url: &Url) -> Option<String> {
 	mdn_doc(url).then_some(())?;
-	let html = metadata_client()?
-		.get(url.as_str())
+	let client = metadata_client()?;
+	let html = safe_get(&client, url.as_str())?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -3030,8 +3154,8 @@ fn first_article_paragraph(html: &str) -> Option<String> {
 
 fn livejournal_title(url: &Url) -> Option<String> {
 	livejournal_post(url).then_some(())?;
-	let html = metadata_client()?
-		.get(url.as_str())
+	let client = metadata_client()?;
+	let html = safe_get(&client, url.as_str())?
 		.send()
 		.ok()?
 		.error_for_status()
@@ -3095,8 +3219,8 @@ fn habr_user_title(url: &Url) -> Option<String> {
 		"https://habr.com/kek/v2/users/{}/card",
 		utf8_percent_encode(&alias, PATH_SEGMENT_ENCODE)
 	);
-	let response: Value = metadata_client()?
-		.get(endpoint)
+	let client = metadata_client()?;
+	let response: Value = safe_get(&client, &endpoint)?
 		.query(&[("hl", language)])
 		.header("Accept", "application/json")
 		.send()
@@ -3863,6 +3987,39 @@ mod tests {
 		);
 		assert!(definitely_broken_status(404));
 		assert!(!definitely_broken_status(403));
+	}
+
+	#[test]
+	fn ssrf_guard_blocks_non_public_targets() {
+		for url in [
+			"http://localhost/latest/meta-data/",
+			"http://127.0.0.1/",
+			"http://10.0.0.1/",
+			"http://100.64.0.1/",
+			"http://169.254.169.254/latest/meta-data/",
+			"http://172.16.0.1/",
+			"http://192.168.0.1/",
+			"http://192.0.2.1/",
+			"http://[::1]/",
+			"http://[fe80::1]/",
+			"http://[fc00::1]/",
+			"http://[::ffff:169.254.169.254]/",
+			"file:///etc/passwd",
+		] {
+			let parsed = Url::parse(url).unwrap();
+			assert!(!ssrf_safe_url(&parsed), "{url}");
+		}
+	}
+
+	#[test]
+	fn ssrf_guard_allows_public_ip_targets() {
+		for url in [
+			"https://93.184.216.34/",
+			"http://[2606:2800:220:1:248:1893:25c8:1946]/",
+		] {
+			let parsed = Url::parse(url).unwrap();
+			assert!(ssrf_safe_url(&parsed), "{url}");
+		}
 	}
 
 	#[test]

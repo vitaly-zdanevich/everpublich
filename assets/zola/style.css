@@ -10,6 +10,9 @@
 	--code-fg: #f2f2f2;
 	--link: #0b63ce;
 	--accent: #207a4d;
+	--comment-border: #4267b2;
+	--comment-panel: #f2f6ff;
+	--comment-target-bg: #4267b21f;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -24,10 +27,24 @@
 		--code-fg: #f0f0f0;
 		--link: #7ab7ff;
 		--accent: #6ed69a;
+		--comment-border: #86a8ff;
+		--comment-panel: #0c1220;
+		--comment-target-bg: #86a8ff2e;
 	}
 
 	span[style*="--en-highlight"] {
 		color: #151515 !important;
+	}
+
+	[style*="--en-codeblock"] {
+		border-color: var(--line) !important;
+		background-color: var(--code-bg) !important;
+		color: var(--code-fg) !important;
+	}
+
+	[style*="--en-codeblock"] * {
+		background-color: transparent !important;
+		color: inherit !important;
 	}
 }
 
@@ -137,12 +154,23 @@ blockquote:not(.instagram-media) > :last-child {
 	margin-bottom: 0;
 }
 
+.evernote-comment-target {
+	border-bottom: 2px solid var(--comment-border);
+	border-radius: 2px;
+	background: var(--comment-target-bg);
+}
+
 .evernote-comments {
 	margin: 1.25rem 0;
-	border-left: 4px solid var(--accent);
+	border-left: 4px solid var(--comment-border);
 	border-radius: 4px;
-	background: var(--panel);
+	background: var(--comment-panel);
+	color: var(--fg);
 	padding: .75rem 1rem;
+}
+
+.evernote-comments__body {
+	color: var(--fg);
 }
 
 .evernote-comments__title {
