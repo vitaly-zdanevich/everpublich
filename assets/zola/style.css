@@ -137,6 +137,43 @@ blockquote:not(.instagram-media) > :last-child {
 	margin-bottom: 0;
 }
 
+.evernote-comments {
+	margin: 1.25rem 0;
+	border-left: 4px solid var(--accent);
+	border-radius: 4px;
+	background: var(--panel);
+	padding: .75rem 1rem;
+}
+
+.evernote-comments__title {
+	margin: 0 0 .5rem;
+	font-weight: 700;
+}
+
+.evernote-comments ol {
+	margin: 0;
+	padding-left: 1.25rem;
+}
+
+.evernote-comments__item + .evernote-comments__item {
+	margin-top: .75rem;
+}
+
+.evernote-comments__body > :first-child,
+.evernote-comments__meta {
+	margin-top: 0;
+}
+
+.evernote-comments__body > :last-child,
+.evernote-comments__meta {
+	margin-bottom: 0;
+}
+
+.evernote-comments__meta {
+	color: var(--muted);
+	font-size: .9rem;
+}
+
 .site-header {
 	display: flex;
 	gap: 16px;

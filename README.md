@@ -85,6 +85,7 @@ The old official-client cache reader remains as a fallback/debug path, but the A
 - ZIP, RAR, and TAR-family archives are copied and can show a closed file tree when the server can inspect them.
 - Internal Evernote note links become relative website links.
 - Evernote formatting is preserved as HTML, including fonts, sizes, colors, and tables.
+- Evernote comments, checkboxes, toggles, and callouts are rendered in the generated website.
 - Optional Google Analytics and Yandex Metrica.
 - Mobile-friendly design with black dark mode via `prefers-color-scheme`.
 - Offline support in the browser.

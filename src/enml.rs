@@ -6,8 +6,10 @@
 //! Evernote-specific tags and internal links.
 
 use crate::models::Resource;
-use html_escape::{encode_double_quoted_attribute, encode_text};
+use chrono::{TimeZone, Utc};
+use html_escape::{decode_html_entities, encode_double_quoted_attribute, encode_text};
 use regex::{Captures, Regex};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 /// Attachment rendering options parsed from an `everpublich:config` note.
@@ -101,7 +103,8 @@ pub fn enml_to_zola_body_with_options(
 fn normalize_evernote_rich_blocks(html: &str) -> String {
 	let out = convert_evernote_todo_lists(html);
 	let out = convert_evernote_toggles(&out);
-	convert_evernote_callouts(&out)
+	let out = convert_evernote_callouts(&out);
+	convert_evernote_comments(&out)
 }
 
 /// Render Evernote task lists as disabled browser checkboxes.
@@ -185,6 +188,194 @@ fn convert_evernote_callouts(html: &str) -> String {
 			)
 		})
 		.into_owned()
+}
+
+/// Render Evernote's current comments metadata, which is stored as JSON inside
+/// a CSS custom property on an otherwise empty element.
+fn convert_evernote_comments(html: &str) -> String {
+	let mut out = html.to_string();
+	for tag in ["div", "span"] {
+		let comment_marker = Regex::new(&format!(
+			r#"(?is)<{tag}\b(?P<attrs>[^>]*--en-threads\s*:[^>]*)>\s*(?:<br\s*/?>)?\s*</{tag}>"#
+		))
+		.unwrap();
+		out = comment_marker
+			.replace_all(&out, |caps: &Captures| {
+				let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or_default();
+				let Some(threads) = evernote_threads_from_attrs(attrs) else {
+					return caps.get(0).unwrap().as_str().to_string();
+				};
+				render_evernote_comments(&threads)
+			})
+			.into_owned();
+	}
+	out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvernoteThread {
+	comments: Vec<EvernoteComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvernoteComment {
+	content: String,
+	author: Option<String>,
+	created_at_millis: Option<i64>,
+	edited: bool,
+}
+
+fn evernote_threads_from_attrs(attrs: &str) -> Option<Vec<EvernoteThread>> {
+	let style = style_attr(attrs)?;
+	let raw = evernote_style_raw_value(&style, "--en-threads")?;
+	let decoded = decode_evernote_style_json(&raw)?;
+	let value: Value = serde_json::from_str(&decoded).ok()?;
+	let threads = parse_evernote_threads(&value);
+	threads
+		.iter()
+		.any(|thread| !thread.comments.is_empty())
+		.then_some(threads)
+}
+
+fn evernote_style_raw_value(style: &str, property: &str) -> Option<String> {
+	let lower = style.to_ascii_lowercase();
+	let start = lower.find(&property.to_ascii_lowercase())?;
+	let after_property = &style[start + property.len()..];
+	let colon = after_property.find(':')?;
+	let after_colon = after_property[colon + 1..].trim_start();
+	let next_property = Regex::new(r#"(?i);\s*--en-[a-z0-9-]+\s*:"#).unwrap();
+	let end = next_property
+		.find(after_colon)
+		.map(|matched| matched.start())
+		.unwrap_or(after_colon.len());
+	Some(after_colon[..end].trim().to_string())
+}
+
+fn decode_evernote_style_json(raw: &str) -> Option<String> {
+	let with_backslashes = raw.replace("&bsol;", "\\");
+	let decoded = decode_html_entities(&with_backslashes);
+	let decoded = decoded.trim();
+	if decoded.starts_with('"') {
+		serde_json::from_str::<String>(decoded).ok()
+	} else {
+		Some(decoded.to_string())
+	}
+}
+
+fn parse_evernote_threads(value: &Value) -> Vec<EvernoteThread> {
+	let Some(threads) = value.as_array() else {
+		return Vec::new();
+	};
+	threads
+		.iter()
+		.filter_map(|thread| {
+			let comments = thread
+				.get("comments")
+				.and_then(Value::as_array)
+				.into_iter()
+				.flatten()
+				.filter_map(parse_evernote_comment)
+				.collect::<Vec<_>>();
+			(!comments.is_empty()).then_some(EvernoteThread { comments })
+		})
+		.collect()
+}
+
+fn parse_evernote_comment(value: &Value) -> Option<EvernoteComment> {
+	let content = json_string(value, &["content", "body", "text"])?;
+	let author = json_string(
+		value,
+		&[
+			"authorName",
+			"creatorName",
+			"createdBy",
+			"userName",
+			"author",
+		],
+	);
+	Some(EvernoteComment {
+		content,
+		author,
+		created_at_millis: json_i64(value, &["createdAt", "created", "created_at"]),
+		edited: value
+			.get("hasBeenEdited")
+			.or_else(|| value.get("edited"))
+			.and_then(Value::as_bool)
+			.unwrap_or(false),
+	})
+}
+
+fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
+	keys.iter()
+		.find_map(|key| value.get(*key).and_then(Value::as_str))
+		.map(str::trim)
+		.filter(|value| !value.is_empty())
+		.map(str::to_string)
+}
+
+fn json_i64(value: &Value, keys: &[&str]) -> Option<i64> {
+	keys.iter()
+		.find_map(|key| value.get(*key).and_then(Value::as_i64))
+}
+
+fn render_evernote_comments(threads: &[EvernoteThread]) -> String {
+	let mut out = String::from(
+		r#"<aside class="evernote-comments" aria-label="Evernote comments"><p class="evernote-comments__title">Comments</p><ol>"#,
+	);
+	for thread in threads {
+		for comment in &thread.comments {
+			out.push_str(r#"<li class="evernote-comments__item">"#);
+			out.push_str(&format!(
+				r#"<div class="evernote-comments__body">{}</div>"#,
+				comment_html(&comment.content)
+			));
+			let meta = comment_metadata(comment);
+			if !meta.is_empty() {
+				out.push_str(&format!(
+					r#"<p class="evernote-comments__meta">{}</p>"#,
+					meta.join(" · ")
+				));
+			}
+			out.push_str("</li>");
+		}
+	}
+	out.push_str("</ol></aside>");
+	out
+}
+
+fn comment_html(content: &str) -> String {
+	let mut out = String::new();
+	for (index, line) in content.lines().enumerate() {
+		if index > 0 {
+			out.push_str("<br>");
+		}
+		out.push_str(&encode_text(line));
+	}
+	if out.is_empty() {
+		encode_text(content).to_string()
+	} else {
+		out
+	}
+}
+
+fn comment_metadata(comment: &EvernoteComment) -> Vec<String> {
+	let mut parts = Vec::new();
+	if let Some(author) = &comment.author {
+		parts.push(encode_text(author).to_string());
+	}
+	if let Some(created_at) = comment.created_at_millis.and_then(format_comment_time) {
+		parts.push(created_at);
+	}
+	if comment.edited {
+		parts.push("edited".to_string());
+	}
+	parts
+}
+
+fn format_comment_time(millis: i64) -> Option<String> {
+	Utc.timestamp_millis_opt(millis)
+		.single()
+		.map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
 }
 
 /// Return the body and attributes for an HTML fragment that is one wrapping div.
@@ -684,6 +875,30 @@ mod tests {
 				r#"<div class="evernote-callout__body">This is my callout example</div>"#
 			)
 		);
+	}
+
+	#[test]
+	fn renders_evernote_comments_metadata() {
+		let style = r#"--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:267,\&quot;to\&quot;:275}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"#;
+		let raw = evernote_style_raw_value(style, "--en-threads").unwrap();
+		let decoded = decode_evernote_style_json(&raw).unwrap_or_else(|| panic!("{raw}"));
+		assert!(decoded.contains(r#""comments""#), "{decoded}");
+
+		let body = enml_to_zola_body(
+			r#"<en-note><div style="--en-threads:&quot;[{\&quot;comments\&quot;:[{\&quot;content\&quot;:\&quot;Hi, this is my comment\&quot;,\&quot;createdAt\&quot;:1783311195586,\&quot;hasBeenEdited\&quot;:true}],\&quot;ranges\&quot;:[{\&quot;from\&quot;:267,\&quot;to\&quot;:275}]}]&quot;;--en-requiredFeatures:&quot;[\&quot;evernoteComments\&quot;]&quot;;"></div><div>On this line we are testing comments.</div></en-note>"#,
+			&[],
+			&HashMap::new(),
+		);
+
+		assert!(
+			body.contains(r#"<aside class="evernote-comments" aria-label="Evernote comments">"#),
+			"{body}"
+		);
+		assert!(body.contains("Hi, this is my comment"));
+		assert!(body.contains("UTC"), "{body}");
+		assert!(body.contains("edited"));
+		assert!(!body.contains("--en-threads"));
+		assert!(body.contains("On this line we are testing comments."));
 	}
 
 	#[test]
