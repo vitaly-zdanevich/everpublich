@@ -79,7 +79,25 @@ fn zola_build_renders_public_html() {
 	assert_contains(&style, ".internal-link{color:var(--accent)}");
 	assert_contains(
 		&style,
-		".embed-youtube,.embed-vimeo,.embed-rumble,.embed-odysee,.embed-bilibili,.embed-tiktok{aspect-ratio:16/9}",
+		".embed-youtube,.embed-vimeo,.embed-rumble,.embed-odysee,.embed-bilibili,.embed-dailymotion,.embed-ok-ru,.embed-my-mail-ru{aspect-ratio:16/9}",
+	);
+	assert_contains(&style, ".embed-archive-org{aspect-ratio:35/24}");
+	assert_contains(
+		&style,
+		".embed-instagram{background:#000;width:min(100%,658px)}",
+	);
+	assert_contains(
+		&style,
+		".embed-instagram .PrimaryCTA{background:#000!important}",
+	);
+	assert_contains(&style, ".embed-instagram .Embed a{color:#bbb!important}");
+	assert_contains(
+		&style,
+		".embed-tiktok iframe{background:#fff;height:min(90vh,820px);min-height:720px}",
+	);
+	assert_contains(
+		&style,
+		".embed-tiktok,.embed-tiktok iframe{background:#000}",
 	);
 	assert_contains(&style, ".embed-soundcloud iframe{height:400px}");
 	assert_contains(&style, ".embed-direct-media video{width:100%}");

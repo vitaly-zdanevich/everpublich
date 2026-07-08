@@ -932,6 +932,10 @@ fn write_templates(root: &Path, notebook_config: &NotebookSiteConfig) -> Result<
 		),
 		("templates/shortcodes/youtube.html", YOUTUBE_SHORTCODE),
 		("templates/shortcodes/vimeo.html", VIMEO_SHORTCODE),
+		(
+			"templates/shortcodes/dailymotion.html",
+			DAILYMOTION_SHORTCODE,
+		),
 		("templates/shortcodes/spotify.html", SPOTIFY_SHORTCODE),
 		("templates/shortcodes/soundcloud.html", SOUNDCLOUD_SHORTCODE),
 		("templates/shortcodes/genius.html", GENIUS_SHORTCODE),
@@ -946,9 +950,21 @@ fn write_templates(root: &Path, notebook_config: &NotebookSiteConfig) -> Result<
 		("templates/shortcodes/instagram.html", INSTAGRAM_SHORTCODE),
 		("templates/shortcodes/pinterest.html", PINTEREST_SHORTCODE),
 		("templates/shortcodes/rumble.html", RUMBLE_SHORTCODE),
+		(
+			"templates/shortcodes/archive_org.html",
+			ARCHIVE_ORG_SHORTCODE,
+		),
 		("templates/shortcodes/odysee.html", ODYSEE_SHORTCODE),
 		("templates/shortcodes/bilibili.html", BILIBILI_SHORTCODE),
 		("templates/shortcodes/tiktok.html", TIKTOK_SHORTCODE),
+		(
+			"templates/shortcodes/ok_ru_video.html",
+			OK_RU_VIDEO_SHORTCODE,
+		),
+		(
+			"templates/shortcodes/my_mail_ru_video.html",
+			MY_MAIL_RU_VIDEO_SHORTCODE,
+		),
 		("templates/shortcodes/steam.html", STEAM_SHORTCODE),
 		(
 			"templates/shortcodes/vk_playlist.html",
@@ -1342,17 +1358,21 @@ const STL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-stl-viewe
 const THREE_MODEL_VIEWER_SHORTCODE: &str = r#"<div class="embed embed-3d embed-three-model-viewer three-model-viewer" data-src="{{ page.permalink | safe }}{{ src }}" data-kind="{{ kind }}" data-label="{{ label | default(value="3D model") }}"><div class="three-model-viewer__canvas" role="img" aria-label="{{ label | default(value="3D model") }}"></div><p><a href="{{ page.permalink | safe }}{{ src }}" download>Download {{ label | default(value="3D model") }}</a></p></div><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"}}</script><script type="module" src="{{ get_url(path='three-model-viewer.js', cachebust=true) | safe }}"></script>"#;
 const YOUTUBE_SHORTCODE: &str = r#"<div class="embed embed-youtube"><iframe src="https://www.youtube.com/embed/{{ id }}" title="YouTube video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>"#;
 const VIMEO_SHORTCODE: &str = r#"<div class="embed embed-vimeo"><iframe src="https://player.vimeo.com/video/{{ id }}" title="Vimeo video" loading="lazy" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></div>"#;
+const DAILYMOTION_SHORTCODE: &str = r#"<div class='embed embed-dailymotion'><iframe src='https://geo.dailymotion.com/player.html?video={{ id }}' title='Dailymotion Video Player' loading='lazy' allow='web-share' allowfullscreen></iframe></div>"#;
 const SPOTIFY_SHORTCODE: &str = r#"<div class="embed embed-spotify"><iframe src="{{ url }}" loading="lazy" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe><a href="{{ url }}">Open in Spotify</a></div>"#;
 const SOUNDCLOUD_SHORTCODE: &str = r#"<div class="embed embed-soundcloud"><iframe src="{{ url }}" title="SoundCloud player" loading="lazy" allow="autoplay; encrypted-media"></iframe></div>"#;
 const APPLE_PODCAST_SHORTCODE: &str = r#"<div class="embed embed-apple"><iframe src="{{ url }}" loading="lazy" allow="autoplay *; encrypted-media *;"></iframe><a href="{{ url }}">Listen on Apple Podcasts</a></div>"#;
 const YANDEX_MUSIC_SHORTCODE: &str = r#"<div class="embed embed-yandex"><iframe src="{{ url }}" loading="lazy"></iframe><a href="{{ url }}">Open in Yandex Music</a></div>"#;
-const INSTAGRAM_SHORTCODE: &str = r#"<blockquote class="instagram-media" data-instgrm-permalink="{{ url }}" data-instgrm-version="14"><a href="{{ url }}">View on Instagram</a></blockquote><script async src="//www.instagram.com/embed.js"></script>"#;
+const INSTAGRAM_SHORTCODE: &str = r#"<div class='embed embed-instagram'><blockquote class='instagram-media' data-instgrm-permalink='{{ url }}' data-instgrm-version='14'><a href='{{ url }}'>View on Instagram</a></blockquote><script async src='//www.instagram.com/embed.js'></script></div>"#;
 const PINTEREST_SHORTCODE: &str = r#"<a data-pin-do="embedPin" data-pin-width="large" href="{{ url }}">View on Pinterest</a><script async defer src="//assets.pinterest.com/js/pinit.js"></script>"#;
 const GENIUS_SHORTCODE: &str = r#"<div class='embed embed-genius'><div id='rg_embed_link_{{ song_id }}' class='rg_embed_link' data-song-id='{{ song_id }}'><a href='{{ url }}'>Lyrics on Genius</a></div><script crossorigin src='//genius.com/songs/{{ song_id }}/embed.js'></script></div>"#;
-const RUMBLE_SHORTCODE: &str = r#"<div class="embed embed-rumble"><iframe src="https://rumble.com/embed/{{ id }}/" title="Rumble video" loading="lazy" allowfullscreen></iframe></div>"#;
+const RUMBLE_SHORTCODE: &str = r#"<div class="embed embed-rumble"><iframe src="{{ url }}" title="Rumble video" loading="lazy" allowfullscreen></iframe></div>"#;
+const ARCHIVE_ORG_SHORTCODE: &str = r#"<div class='embed embed-archive-org'><iframe src='https://archive.org/embed/{{ id }}' width='560' height='384' frameborder='0' loading='lazy' webkitallowfullscreen='true' mozallowfullscreen='true' allowfullscreen></iframe></div>"#;
 const ODYSEE_SHORTCODE: &str = r#"<div class="embed embed-odysee"><iframe src="{{ url }}" title="Odysee video" loading="lazy" allowfullscreen></iframe></div>"#;
 const BILIBILI_SHORTCODE: &str = r#"<div class="embed embed-bilibili"><iframe src="{{ url }}" title="Bilibili video" loading="lazy" allowfullscreen></iframe></div>"#;
 const TIKTOK_SHORTCODE: &str = r#"<div class="embed embed-tiktok"><iframe src="https://www.tiktok.com/embed/v2/{{ id }}" title="TikTok video" loading="lazy" allow="encrypted-media" allowfullscreen></iframe><a href="{{ url }}">View on TikTok</a></div>"#;
+const OK_RU_VIDEO_SHORTCODE: &str = r#"<div class='embed embed-ok-ru'><iframe width='560' height='315' src='https://ok.ru/videoembed/{{ id }}?nochat=1' frameborder='0' loading='lazy' allow='autoplay' allowfullscreen></iframe></div>"#;
+const MY_MAIL_RU_VIDEO_SHORTCODE: &str = r#"<div class='embed embed-my-mail-ru'><iframe src='https://my.mail.ru/video/embed/{{ id }}' width='626' height='367' frameborder='0' scrolling='no' loading='lazy' webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe></div>"#;
 const STEAM_SHORTCODE: &str = r#"<div class="embed embed-steam"><iframe src="https://store.steampowered.com/widget/{{ app_id }}/" title="Steam app" loading="lazy"></iframe></div>"#;
 const VK_PLAYLIST_SHORTCODE: &str = r#"<div class="embed embed-vk-playlist"><iframe src="https://vk.com/widget_playlist.php?oid={{ oid }}&pid={{ pid }}" title="VK playlist" loading="lazy" allow="autoplay; encrypted-media"></iframe></div>"#;
 

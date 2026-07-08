@@ -310,6 +310,11 @@ blockquote:not(.instagram-media) > :last-child {
 	margin: 1rem 0;
 }
 
+.embed-link--source {
+	margin-top: -.4rem;
+	font-size: .82rem;
+}
+
 .evernote-todo-list {
 	list-style: none;
 	margin: 1rem 0;
@@ -386,6 +391,36 @@ blockquote:not(.instagram-media) > :last-child {
 .embed iframe {
 	width: 100%;
 	border: 0;
+}
+
+.embed-instagram {
+	width: min(100%, 658px);
+	background: #000;
+}
+
+.embed-instagram .instagram-media,
+.embed-instagram .instagram-media-rendered {
+	width: 100% !important;
+	min-width: 0 !important;
+	max-width: 658px !important;
+	border: 0 !important;
+	box-shadow: none !important;
+	background: #000 !important;
+}
+
+.embed-instagram iframe {
+	width: 100% !important;
+	min-width: 0 !important;
+	border: 0 !important;
+	background: #000;
+}
+
+.embed-instagram .Embed a {
+	color: #bbb !important;
+}
+
+.embed-instagram .PrimaryCTA {
+	background: #000 !important;
 }
 
 .embed-direct-media video {
@@ -499,8 +534,14 @@ blockquote:not(.instagram-media) > :last-child {
 .embed-rumble,
 .embed-odysee,
 .embed-bilibili,
-.embed-tiktok {
+.embed-dailymotion,
+.embed-ok-ru,
+.embed-my-mail-ru {
 	aspect-ratio: 16/9;
+}
+
+.embed-archive-org {
+	aspect-ratio: 35/24;
 }
 
 .embed-youtube iframe,
@@ -508,8 +549,22 @@ blockquote:not(.instagram-media) > :last-child {
 .embed-rumble iframe,
 .embed-odysee iframe,
 .embed-bilibili iframe,
-.embed-tiktok iframe {
+.embed-dailymotion iframe,
+.embed-ok-ru iframe,
+.embed-my-mail-ru iframe,
+.embed-archive-org iframe {
 	height: 100%;
+}
+
+.embed-tiktok {
+	width: min(100%, 420px);
+	background: #fff;
+}
+
+.embed-tiktok iframe {
+	height: min(90vh, 820px);
+	min-height: 720px;
+	background: #fff;
 }
 
 .embed-spotify iframe {
@@ -631,6 +686,11 @@ blockquote:not(.instagram-media) > :last-child {
 	.embed-reddit-subreddit iframe,
 	.embed-reddit-subreddit .rembeddit {
 		filter: invert(1) hue-rotate(180deg);
+	}
+
+	.embed-tiktok,
+	.embed-tiktok iframe {
+		background: #000;
 	}
 
 	.embed-genius {

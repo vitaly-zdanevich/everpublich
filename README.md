@@ -108,19 +108,21 @@ If a note contains a bare supported URL, Everpublich can expand it into a widget
 - Dailymotion
 - Bilibili
 - Odysee
+- Internet Archive
 - Yandex Music
 - Steam
 - VK playlists
+- OK.ru
+- my.mail.ru
+- TikTok
 - Mastodon posts and static profile cards
 - Reddit posts, subreddit widgets, and static subreddit cards as fallback
 
 Good extra widget candidates:
 
 - Bandcamp for music and albums
-- TikTok for short videos
 - Twitch for clips and videos
 - Mixcloud for DJ/radio sets
-- Internet Archive for books, audio, and video
 - GitHub Gist and CodePen for code
 - Figma embeds for design files
 - Google Maps for places
@@ -145,7 +147,7 @@ preview poster.psd: off
 ```
 
 - `widgets: off` disables all link-to-widget expansion.
-- `widget: youtube off` disables one widget provider while keeping other providers enabled. Use provider keys like `youtube`, `spotify`, `genius`, `soundcloud`, `apple-podcasts`, `vimeo`, `reddit`, `mastodon`, `steam`, or `vk-playlist`.
+- `widget: youtube off` disables one widget provider while keeping other providers enabled. Use provider keys like `youtube`, `spotify`, `genius`, `soundcloud`, `apple-podcasts`, `vimeo`, `dailymotion`, `internet-archive`, `reddit`, `mastodon`, `steam`, `vk-playlist`, `ok-ru`, or `my-mail-ru`.
 - `previews: off` disables attachment previews and renders download links instead.
 - `preview: poster.psd off` disables preview rendering for one file, matched case-insensitively by generated preview filename or original filename.
 

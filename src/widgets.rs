@@ -89,6 +89,10 @@ pub enum WidgetProvider {
 	Steam,
 	/// VK audio playlist.
 	VkPlaylist,
+	/// OK.ru video.
+	OkRu,
+	/// my.mail.ru video.
+	MyMailRu,
 }
 
 impl WidgetProvider {
@@ -123,6 +127,8 @@ impl WidgetProvider {
 			Self::Telegram => "Telegram",
 			Self::Steam => "Steam",
 			Self::VkPlaylist => "VK playlist",
+			Self::OkRu => "OK.ru",
+			Self::MyMailRu => "my.mail.ru",
 		}
 	}
 
@@ -157,6 +163,8 @@ impl WidgetProvider {
 			Self::Telegram => "telegram",
 			Self::Steam => "steam",
 			Self::VkPlaylist => "vk-playlist",
+			Self::OkRu => "ok-ru",
+			Self::MyMailRu => "my-mail-ru",
 		}
 	}
 }
@@ -209,6 +217,8 @@ pub fn supported_widget_names() -> Vec<&'static str> {
 		WidgetProvider::Telegram,
 		WidgetProvider::Steam,
 		WidgetProvider::VkPlaylist,
+		WidgetProvider::OkRu,
+		WidgetProvider::MyMailRu,
 	]
 	.into_iter()
 	.map(WidgetProvider::label)
@@ -247,6 +257,8 @@ pub fn normalize_widget_provider_name(name: &str) -> Option<&'static str> {
 		WidgetProvider::Telegram,
 		WidgetProvider::Steam,
 		WidgetProvider::VkPlaylist,
+		WidgetProvider::OkRu,
+		WidgetProvider::MyMailRu,
 	]
 	.into_iter()
 	.find(|provider| {
@@ -287,12 +299,14 @@ pub fn detect(url: &str) -> Option<Widget> {
 		"podcasts.apple.com" => WidgetProvider::ApplePodcasts,
 		"vimeo.com" | "player.vimeo.com" => WidgetProvider::Vimeo,
 		"rumble.com" => WidgetProvider::Rumble,
-		"dailymotion.com" | "dai.ly" => WidgetProvider::Dailymotion,
+		"dailymotion.com" | "geo.dailymotion.com" | "dai.ly" => WidgetProvider::Dailymotion,
 		"bilibili.com" | "b23.tv" | "bilibili.tv" => WidgetProvider::Bilibili,
 		"odysee.com" => WidgetProvider::Odysee,
 		"music.yandex.ru" | "music.yandex.com" => WidgetProvider::YandexMusic,
 		h if h.ends_with(".bandcamp.com") || h == "bandcamp.com" => WidgetProvider::Bandcamp,
 		"tiktok.com" => WidgetProvider::TikTok,
+		"ok.ru" | "m.ok.ru" => WidgetProvider::OkRu,
+		"my.mail.ru" | "m.my.mail.ru" => WidgetProvider::MyMailRu,
 		"twitch.tv" => WidgetProvider::Twitch,
 		"mixcloud.com" => WidgetProvider::Mixcloud,
 		"archive.org" => WidgetProvider::InternetArchive,
@@ -355,8 +369,11 @@ fn shortcode(provider: WidgetProvider, original: &str, parsed: &Url) -> String {
 			.map(|url| format!(r#"{{{{ pinterest(url="{}") }}}}"#, shortcode_arg(&url)))
 			.unwrap_or_else(|| format!(r#"{{{{ pinterest(url="{original}") }}}}"#)),
 		WidgetProvider::Genius => genius_shortcode(original),
-		WidgetProvider::Rumble => rumble_id(parsed)
-			.map(|id| format!(r#"{{{{ rumble(id="{}") }}}}"#, shortcode_arg(&id)))
+		WidgetProvider::Rumble => rumble_embed(parsed)
+			.map(|url| format!(r#"{{{{ rumble(url="{}") }}}}"#, shortcode_arg(&url)))
+			.unwrap_or_else(|| generic_embed(provider, original)),
+		WidgetProvider::Dailymotion => dailymotion_video_id(parsed)
+			.map(|id| format!(r#"{{{{ dailymotion(id="{}") }}}}"#, shortcode_arg(&id)))
 			.unwrap_or_else(|| generic_embed(provider, original)),
 		WidgetProvider::Odysee => odysee_embed(parsed)
 			.map(|url| format!(r#"{{{{ odysee(url="{}") }}}}"#, shortcode_arg(&url)))
@@ -372,6 +389,15 @@ fn shortcode(provider: WidgetProvider, original: &str, parsed: &Url) -> String {
 					shortcode_arg(&id)
 				)
 			})
+			.unwrap_or_else(|| generic_embed(provider, original)),
+		WidgetProvider::OkRu => ok_ru_video_id(parsed)
+			.map(|id| format!(r#"{{{{ ok_ru_video(id="{}") }}}}"#, shortcode_arg(&id)))
+			.unwrap_or_else(|| generic_embed(provider, original)),
+		WidgetProvider::MyMailRu => my_mail_ru_embed_id(parsed)
+			.map(|id| format!(r#"{{{{ my_mail_ru_video(id="{}") }}}}"#, shortcode_arg(&id)))
+			.unwrap_or_else(|| generic_embed(provider, original)),
+		WidgetProvider::InternetArchive => archive_embed_identifier(parsed)
+			.map(|id| format!(r#"{{{{ archive_org(id="{}") }}}}"#, shortcode_arg(&id)))
 			.unwrap_or_else(|| generic_embed(provider, original)),
 		WidgetProvider::Steam => steam_app_id(parsed)
 			.map(|id| format!(r#"{{{{ steam(app_id="{}") }}}}"#, shortcode_arg(&id)))
@@ -686,14 +712,71 @@ fn pinterest_pin(url: &Url) -> Option<String> {
 		.map(|window| format!("https://www.pinterest.com/pin/{}/", window[1]))
 }
 
-fn rumble_id(url: &Url) -> Option<String> {
+fn rumble_embed(url: &Url) -> Option<String> {
 	let parts = decoded_path_segments(url);
 	if parts.first().is_some_and(|part| part == "embed") {
-		return parts.get(1).cloned().filter(|id| !id.is_empty());
+		return Some(url.as_str().to_string());
 	}
-	let slug = parts.first()?.trim_end_matches(".html");
-	let id = slug.split('-').next()?;
-	(id.starts_with('v') && id.len() > 1).then(|| id.to_string())
+	rumble_oembed_embed_url(url)
+}
+
+fn rumble_oembed_embed_url(url: &Url) -> Option<String> {
+	ssrf_safe_url(url).then_some(())?;
+	cached_widget_html(&format!("rumble-oembed:{}", url.as_str()), || {
+		let client = metadata_client()?;
+		let response: Value = safe_get(&client, "https://rumble.com/api/Media/oembed.json")?
+			.query(&[("url", url.as_str())])
+			.send()
+			.ok()?
+			.error_for_status()
+			.ok()?
+			.text()
+			.ok()
+			.and_then(|body| serde_json::from_str(&body).ok())?;
+		rumble_embed_url_from_oembed(&response)
+	})
+}
+
+fn rumble_embed_url_from_oembed(response: &Value) -> Option<String> {
+	let html = response["html"].as_str()?;
+	let url = first_capture(html, r#"(?is)\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')"#)?;
+	let parsed = Url::parse(&decode_html_entities(&url)).ok()?;
+	(normalized_host(&parsed).as_deref() == Some("rumble.com")
+		&& decoded_path_segments(&parsed)
+			.first()
+			.is_some_and(|part| part == "embed")
+		&& ssrf_safe_url(&parsed))
+	.then(|| parsed.to_string())
+}
+
+/// Extract a Dailymotion video id from public watch, short, or player URLs.
+fn dailymotion_video_id(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if host == "dai.ly" {
+		return decoded_path_segments(url)
+			.into_iter()
+			.next()
+			.filter(|id| dailymotion_id(id));
+	}
+	if !matches!(host.as_str(), "dailymotion.com" | "geo.dailymotion.com") {
+		return None;
+	}
+	url.query_pairs()
+		.find(|(key, _)| key == "video")
+		.map(|(_, value)| value.into_owned())
+		.filter(|id| dailymotion_id(id))
+		.or_else(|| {
+			let parts = decoded_path_segments(url);
+			parts.windows(2).find_map(|window| {
+				matches!(window[0].as_str(), "video" | "embed")
+					.then(|| window[1].clone())
+					.filter(|id| dailymotion_id(id))
+			})
+		})
+}
+
+fn dailymotion_id(id: &str) -> bool {
+	!id.is_empty() && id.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 fn odysee_embed(url: &Url) -> Option<String> {
@@ -737,6 +820,54 @@ fn tiktok_video_id(url: &Url) -> Option<String> {
 		(window[0] == "video" && window[1].chars().all(|c| c.is_ascii_digit()))
 			.then(|| window[1].clone())
 	})
+}
+
+fn ok_ru_video_id(url: &Url) -> Option<String> {
+	let parts = decoded_path_segments(url);
+	(parts.first().is_some_and(|part| part == "video"))
+		.then(|| parts.get(1).cloned())
+		.flatten()
+		.filter(|id| id.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Resolve the numeric my.mail.ru embed id from its public video page HTML.
+fn my_mail_ru_embed_id(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	matches!(host.as_str(), "my.mail.ru" | "m.my.mail.ru").then_some(())?;
+	cached_widget_html(&format!("my-mail-ru:{}", url.as_str()), || {
+		let client = metadata_client()?;
+		let html = safe_get(&client, url.as_str())?
+			.send()
+			.ok()?
+			.error_for_status()
+			.ok()?
+			.text()
+			.ok()?;
+		my_mail_ru_embed_id_from_html(&html)
+	})
+}
+
+/// Parse a my.mail.ru video page and return the id accepted by `/video/embed/`.
+fn my_mail_ru_embed_id_from_html(html: &str) -> Option<String> {
+	first_capture(
+		html,
+		r#"(?is)\b(?:href|content)\s*=\s*(?:"[^"]*/\+/video/url/[^"]*/([0-9]+)"|'[^']*/\+/video/url/[^']*/([0-9]+)')"#,
+	)
+	.or_else(|| first_capture(html, r#"(?is)my\.mail\.ru/video/embed/([0-9]+)"#))
+}
+
+/// Return an Archive.org item id for URLs that should use the item player.
+fn archive_embed_identifier(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if host != "archive.org" {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	let marker = parts.first()?;
+	matches!(marker.as_str(), "details" | "embed" | "stream")
+		.then(|| parts.get(1).cloned())
+		.flatten()
+		.filter(|identifier| !identifier.is_empty())
 }
 
 fn steam_app_id(url: &Url) -> Option<String> {
@@ -1228,7 +1359,7 @@ where
 	let markdown = paragraph_url
 		.replace_all(&markdown, |caps: &regex::Captures| {
 			let url = clean_url(caps.get(1).unwrap().as_str());
-			expand_url(url, caps.get(0).unwrap().as_str())
+			expand_url_and_keep_source(url, caps.get(0).unwrap().as_str(), &expand_url)
 		})
 		.into_owned();
 	let url_line = Regex::new(r"^\s*(https?://\S+)\s*$").unwrap();
@@ -1237,13 +1368,40 @@ where
 		.map(|line| {
 			if let Some(caps) = url_line.captures(line) {
 				let url = clean_url(caps.get(1).unwrap().as_str());
-				expand_url(url, line)
+				expand_url_and_keep_source(url, line, &expand_url)
 			} else {
 				line.to_string()
 			}
 		})
 		.collect::<Vec<_>>()
 		.join("\n")
+}
+
+fn expand_url_and_keep_source<F>(url: &str, fallback: &str, expand_url: &F) -> String
+where
+	F: Fn(&str, &str) -> String,
+{
+	let expanded = expand_url(url, fallback);
+	if widget_replaced_source(&expanded, fallback) {
+		format!("{expanded}\n{}", original_link_html(url))
+	} else {
+		expanded
+	}
+}
+
+fn widget_replaced_source(expanded: &str, fallback: &str) -> bool {
+	expanded != fallback
+		&& !expanded.contains("class=\"embed-link\"")
+		&& !expanded.contains("class=embed-link")
+		&& !expanded.contains("class=\"broken-link\"")
+		&& !expanded.contains("class=broken-link")
+}
+
+fn original_link_html(url: &str) -> String {
+	format!(
+		r#"<p class="embed-link embed-link--source"><a href="{}" rel="noopener">Original link</a></p>"#,
+		encode_double_quoted_attribute(url)
+	)
 }
 
 fn expand_standalone_url_with_disabled(
@@ -1269,13 +1427,22 @@ fn expand_standalone_url_with_disabled(
 }
 
 fn direct_media_embed(url: &Url) -> Option<String> {
+	if commons_file_page_title(url).is_some() {
+		return commons_file_direct_media_embed(url);
+	}
 	let kind = direct_media_kind_from_url(url)?;
 	Some(direct_media_embed_html(url.as_str(), kind))
 }
 
+/// Classify direct media URLs by browser-playable filename extension.
 fn direct_media_kind_from_url(url: &Url) -> Option<DirectMediaKind> {
-	let path = url.path().to_ascii_lowercase();
-	let extension = path.rsplit_once('.')?.1;
+	direct_media_kind_from_filename(url.path())
+}
+
+/// Classify a filename or wiki file title by browser-playable media extension.
+fn direct_media_kind_from_filename(filename: &str) -> Option<DirectMediaKind> {
+	let filename = filename.to_ascii_lowercase();
+	let extension = filename.rsplit_once('.')?.1;
 	match extension {
 		"aac" | "flac" | "m4a" | "mid" | "midi" | "mp3" | "oga" | "ogg" | "opus" | "wav"
 		| "weba" => Some(DirectMediaKind::Audio),
@@ -1514,6 +1681,9 @@ fn link_title(url: &Url) -> Option<String> {
 	}
 	if telegram_channel(url).is_some() {
 		return cached_url_title(url.as_str(), || telegram_channel_title(url));
+	}
+	if google_drive_folder_id(url).is_some() {
+		return cached_url_title(url.as_str(), || google_drive_folder_title(url));
 	}
 	if stackoverflow_question_id(url).is_some() {
 		return cached_url_title(url.as_str(), || stackoverflow_title(url));
@@ -1766,6 +1936,9 @@ fn wikipedia_title_from_page(page: &Value) -> Option<String> {
 			.first()
 			.and_then(|revision| json_string(&revision["timestamp"]))
 	}) {
+		if !lines.is_empty() {
+			lines.push(String::new());
+		}
 		lines.push(format!("Page created: {created}"));
 	}
 	(!lines.is_empty()).then(|| lines.join("\n"))
@@ -1813,29 +1986,22 @@ fn commons_namespace_is_skipped(title: &str) -> bool {
 	)
 }
 
-fn wikipedia_namespace_is_skipped(title: &str) -> bool {
-	let Some((namespace, _)) = title.split_once(':') else {
-		return false;
-	};
-	matches!(
-		namespace.to_ascii_lowercase().as_str(),
-		"special"
-			| "file" | "category"
-			| "help" | "talk"
-			| "template"
-			| "user" | "wikipedia"
-			| "portal"
-			| "module"
-			| "draft" | "timedtext"
-	)
-}
-
 fn commons_title(url: &Url) -> Option<String> {
 	let title = commons_page_title(url)?;
-	if title.starts_with("File:") {
+	if commons_file_title_prefix(&title) {
 		return commons_file_title(&title);
 	}
 	commons_regular_page_title(&title)
+}
+
+/// Extract the Commons `File:` page title for file pages only.
+fn commons_file_page_title(url: &Url) -> Option<String> {
+	let title = commons_page_title(url)?;
+	commons_file_title_prefix(&title).then_some(title)
+}
+
+fn commons_file_title_prefix(title: &str) -> bool {
+	title.starts_with("File:")
 }
 
 fn commons_page_title(url: &Url) -> Option<String> {
@@ -1851,7 +2017,7 @@ fn commons_page_title(url: &Url) -> Option<String> {
 		.decode_utf8()
 		.ok()?
 		.replace('_', " ");
-	if wikipedia_namespace_is_skipped(&title) {
+	if commons_namespace_is_skipped(&title) {
 		return None;
 	}
 	Some(title)
@@ -1878,6 +2044,48 @@ fn commons_file_title(title: &str) -> Option<String> {
 		.and_then(|body| serde_json::from_str(&body).ok())?;
 	let page = response["query"]["pages"].as_array()?.first()?;
 	commons_file_title_from_page(title, page)
+}
+
+/// Convert a Wikimedia Commons `File:` page URL into a browser-playable media embed.
+fn commons_file_direct_media_embed(url: &Url) -> Option<String> {
+	let title = commons_file_page_title(url)?;
+	let kind = direct_media_kind_from_filename(&title)?;
+	let media_url = commons_file_media_url(&title)?;
+	Some(direct_media_embed_html(&media_url, kind))
+}
+
+/// Fetch the original media URL for a Commons `File:` title through the API.
+fn commons_file_media_url(title: &str) -> Option<String> {
+	let client = metadata_client()?;
+	let response: Value = client
+		.get("https://commons.wikimedia.org/w/api.php")
+		.query(&[
+			("action", "query"),
+			("prop", "imageinfo"),
+			("iiprop", "url"),
+			("format", "json"),
+			("formatversion", "2"),
+			("titles", title),
+		])
+		.send()
+		.ok()?
+		.error_for_status()
+		.ok()?
+		.text()
+		.ok()
+		.and_then(|body| serde_json::from_str(&body).ok())?;
+	let page = response["query"]["pages"].as_array()?.first()?;
+	let url = commons_file_media_url_from_page(page)?;
+	let parsed = Url::parse(&url).ok()?;
+	ssrf_safe_url(&parsed).then(|| parsed.to_string())
+}
+
+/// Extract the API `imageinfo.url` field for a Commons file page.
+fn commons_file_media_url_from_page(page: &Value) -> Option<String> {
+	page["imageinfo"]
+		.as_array()?
+		.first()
+		.and_then(|info| json_string(&info["url"]))
 }
 
 fn commons_file_title_from_page(title: &str, page: &Value) -> Option<String> {
@@ -3383,6 +3591,117 @@ fn telegram_channel_description(html: &str) -> Option<String> {
 	.and_then(|description| compact_title_text(&description))
 }
 
+/// Build hover metadata for a public Google Drive folder link.
+fn google_drive_folder_title(url: &Url) -> Option<String> {
+	let folder_id = google_drive_folder_id(url)?;
+	let client = metadata_client()?;
+	let html = safe_get(
+		&client,
+		&format!("https://drive.google.com/embeddedfolderview?id={folder_id}"),
+	)?
+	.send()
+	.ok()?
+	.error_for_status()
+	.ok()?
+	.text()
+	.ok()?;
+	google_drive_folder_title_from_html(&html)
+}
+
+/// Extract the Google Drive folder id from common public folder URLs.
+fn google_drive_folder_id(url: &Url) -> Option<String> {
+	let host = normalized_host(url)?;
+	if host != "drive.google.com" {
+		return None;
+	}
+	let parts = decoded_path_segments(url);
+	parts
+		.windows(2)
+		.find_map(|window| {
+			(window[0] == "folders")
+				.then(|| window[1].clone())
+				.filter(|id| google_drive_id(id))
+		})
+		.or_else(|| {
+			url.query_pairs()
+				.find(|(key, _)| key == "id")
+				.map(|(_, value)| value.into_owned())
+				.filter(|id| google_drive_id(id))
+		})
+}
+
+fn google_drive_id(id: &str) -> bool {
+	id.len() >= 8
+		&& id
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn google_drive_folder_title_from_html(html: &str) -> Option<String> {
+	let folder = meta_content(html, "og:title")
+		.or_else(|| html_title_text(html))
+		.map(|title| title.replace(" - Google Drive", ""))
+		.and_then(|title| compact_title_text(&title));
+	let files = google_drive_file_names_from_html(html);
+	let mut lines = Vec::new();
+	if let Some(folder) = folder {
+		lines.push(format!("Google Drive folder: {folder}"));
+	}
+	if !files.is_empty() {
+		lines.push("Files:".to_string());
+		lines.extend(files.into_iter().map(|file| format!("- {file}")));
+	}
+	(!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn google_drive_file_names_from_html(html: &str) -> Vec<String> {
+	let mut files = Vec::new();
+	for pattern in [
+		r#"(?is)<[^>]*class=["'][^"']*\bflip-entry-title\b[^"']*["'][^>]*>(.*?)</[^>]+>"#,
+		r#"(?is)\bdata-tooltip\s*=\s*(?:"([^"]+)"|'([^']+)')"#,
+		r#"(?is)\baria-label\s*=\s*(?:"([^"]+)"|'([^']+)')"#,
+	] {
+		let Ok(regex) = Regex::new(pattern) else {
+			continue;
+		};
+		for caps in regex.captures_iter(html) {
+			let Some(name) = (1..caps.len())
+				.find_map(|index| caps.get(index))
+				.map(|value| value.as_str())
+			else {
+				continue;
+			};
+			let name = strip_html(&decode_html_entities(name));
+			let Some(name) = compact_title_text(&name) else {
+				continue;
+			};
+			if google_drive_file_label(&name) && !files.iter().any(|seen| seen == &name) {
+				files.push(name);
+				if files.len() >= 30 {
+					return files;
+				}
+			}
+		}
+	}
+	files
+}
+
+fn google_drive_file_label(name: &str) -> bool {
+	let lower = name.to_ascii_lowercase();
+	!matches!(
+		lower.as_str(),
+		"google drive"
+			| "download"
+			| "more actions"
+			| "list view"
+			| "grid view"
+			| "open" | "preview"
+			| "share"
+	) && !lower.starts_with("shared with ")
+		&& !lower.starts_with("folder: ")
+		&& !name.is_empty()
+}
+
 fn stackoverflow_title(url: &Url) -> Option<String> {
 	let question_id = stackoverflow_question_id(url)?;
 	let response: Value = metadata_client()?
@@ -3544,7 +3863,7 @@ where
 			if Url::parse(url).is_err() {
 				return caps.get(0).unwrap().as_str().to_string();
 			}
-			expand_url(url, caps.get(0).unwrap().as_str())
+			expand_url_and_keep_source(url, caps.get(0).unwrap().as_str(), expand_url)
 		})
 		.into_owned()
 }
@@ -3559,7 +3878,7 @@ fn href_attr(attrs: &str) -> Option<String> {
 }
 
 fn set_title_attr(attrs: &str, title: &str) -> String {
-	let title_attr = format!(r#"title="{}""#, encode_double_quoted_attribute(title));
+	let title_attr = format!(r#"title="{}""#, encode_title_attribute(title));
 	let title_regex = Regex::new(r#"(?is)\btitle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)"#).unwrap();
 	if let Some(matched) = title_regex.find(attrs) {
 		let mut out = String::new();
@@ -3569,6 +3888,10 @@ fn set_title_attr(attrs: &str, title: &str) -> String {
 		return out;
 	}
 	format!("{attrs} {title_attr}")
+}
+
+fn encode_title_attribute(title: &str) -> String {
+	encode_double_quoted_attribute(title).replace('\n', "&#10;")
 }
 
 fn add_class_attr(attrs: &str, class_name: &str) -> String {
@@ -3622,6 +3945,18 @@ mod tests {
 				.provider,
 			WidgetProvider::YandexMusic
 		);
+		assert_eq!(
+			detect("https://archive.org/details/example-item")
+				.unwrap()
+				.provider,
+			WidgetProvider::InternetArchive
+		);
+		assert_eq!(
+			detect("https://ok.ru/video/15486435789402")
+				.unwrap()
+				.provider,
+			WidgetProvider::OkRu
+		);
 	}
 
 	#[test]
@@ -3630,6 +3965,10 @@ mod tests {
 		let out = expand_bare_links(md, true);
 
 		assert!(out.contains(r#"{{ youtube(id="abc") }}"#), "{out}");
+		assert!(
+			out.contains(r#"<a href="https://youtu.be/abc" rel="noopener">Original link</a>"#),
+			"{out}"
+		);
 		assert!(out.contains("[link](https://youtu.be/abc)"), "{out}");
 	}
 
@@ -3638,7 +3977,11 @@ mod tests {
 		let html = r#"<div><a href=https://www.youtube.com/watch?v=e2_qbL4TiDg rev=en_rl_none>https://www.youtube.com/watch?v=e2_qbL4TiDg</a></div>"#;
 		let out = expand_bare_links(html, true);
 
-		assert_eq!(out, r#"{{ youtube(id="e2_qbL4TiDg") }}"#);
+		assert_eq!(
+			out,
+			r#"{{ youtube(id="e2_qbL4TiDg") }}
+<p class="embed-link embed-link--source"><a href="https://www.youtube.com/watch?v=e2_qbL4TiDg" rel="noopener">Original link</a></p>"#
+		);
 	}
 
 	#[test]
@@ -3647,7 +3990,11 @@ mod tests {
 			r#"<div><a href="https://www.youtube.com/watch?v=e2_qbL4TiDg">YouTube</a></div>"#;
 		let out = expand_bare_links(html, true);
 
-		assert_eq!(out, r#"{{ youtube(id="e2_qbL4TiDg") }}"#);
+		assert_eq!(
+			out,
+			r#"{{ youtube(id="e2_qbL4TiDg") }}
+<p class="embed-link embed-link--source"><a href="https://www.youtube.com/watch?v=e2_qbL4TiDg" rel="noopener">Original link</a></p>"#
+		);
 	}
 
 	#[test]
@@ -3660,10 +4007,22 @@ mod tests {
 			out.contains(r#"<source src="https://cdn.example.test/audio.oga">"#),
 			"{out}"
 		);
+		assert!(
+			out.contains(
+				r#"<a href="https://cdn.example.test/audio.oga" rel="noopener">Original link</a>"#
+			),
+			"{out}"
+		);
 		assert!(out.contains("<video controls"), "{out}");
 		assert!(out.contains("playsinline"), "{out}");
 		assert!(
 			out.contains(r#"<source src="https://cdn.example.test/video.mkv">"#),
+			"{out}"
+		);
+		assert!(
+			out.contains(
+				r#"<a href="https://cdn.example.test/video.mkv" rel="noopener">Original link</a>"#
+			),
 			"{out}"
 		);
 	}
@@ -3676,6 +4035,12 @@ mod tests {
 		assert!(out.contains("<audio controls"), "{out}");
 		assert!(
 			out.contains(r#"<source src="https://cdn.example.test/song.opus">"#),
+			"{out}"
+		);
+		assert!(
+			out.contains(
+				r#"<a href="https://cdn.example.test/song.opus" rel="noopener">Original link</a>"#
+			),
 			"{out}"
 		);
 	}
@@ -3738,6 +4103,19 @@ mod tests {
 		assert_eq!(
 			out,
 			r#"<a href="https://en.wikipedia.org/wiki/PostgreSQL" title="PostgreSQL intro">PostgreSQL</a>"#
+		);
+	}
+
+	#[test]
+	fn encodes_link_title_line_breaks_as_entities() {
+		let html = r#"<a href="https://en.wikipedia.org/wiki/PostgreSQL">PostgreSQL</a>"#;
+		let out = enrich_link_titles_with(html, |_| {
+			Some("PostgreSQL intro.\n\nPage created: 2003-11-06T08:19:24Z".into())
+		});
+
+		assert_eq!(
+			out,
+			r#"<a href="https://en.wikipedia.org/wiki/PostgreSQL" title="PostgreSQL intro.&#10;&#10;Page created: 2003-11-06T08:19:24Z">PostgreSQL</a>"#
 		);
 	}
 
@@ -3847,10 +4225,24 @@ mod tests {
 			r#"{{ vimeo(id="123456") }}"#
 		);
 		assert_eq!(
-			detect("https://rumble.com/v6abc-test.html")
+			detect("https://rumble.com/embed/v6abc/").unwrap().shortcode,
+			r#"{{ rumble(url="https://rumble.com/embed/v6abc/") }}"#
+		);
+		assert_eq!(
+			detect("https://www.dailymotion.com/video/xakbodi")
 				.unwrap()
 				.shortcode,
-			r#"{{ rumble(id="v6abc") }}"#
+			r#"{{ dailymotion(id="xakbodi") }}"#
+		);
+		assert_eq!(
+			detect("https://dai.ly/xakbodi").unwrap().shortcode,
+			r#"{{ dailymotion(id="xakbodi") }}"#
+		);
+		assert_eq!(
+			detect("https://archive.org/details/bot_telegram_rutracker_lecture")
+				.unwrap()
+				.shortcode,
+			r#"{{ archive_org(id="bot_telegram_rutracker_lecture") }}"#
 		);
 		assert_eq!(
 			detect("https://odysee.com/@channel:1/video:2")
@@ -3882,7 +4274,35 @@ mod tests {
 				.shortcode,
 			r#"{{ vk_playlist(oid="-23865151", pid="83082491") }}"#
 		);
+		assert_eq!(
+			detect("https://ok.ru/video/15486435789402")
+				.unwrap()
+				.shortcode,
+			r#"{{ ok_ru_video(id="15486435789402") }}"#
+		);
 		assert!(detect("https://vk.com/id1").is_none());
+	}
+
+	#[test]
+	fn extracts_my_mail_ru_embed_id() {
+		let html = r#"<link rel="image_src" href="http://my.mail.ru/+/video/url/sc01/2509222333588176924"><meta property="og:image" content="http://my.mail.ru/+/video/url/sc01/2509222333588176924">"#;
+
+		assert_eq!(
+			my_mail_ru_embed_id_from_html(html).as_deref(),
+			Some("2509222333588176924")
+		);
+	}
+
+	#[test]
+	fn extracts_rumble_embed_url_from_oembed() {
+		let response = serde_json::json!({
+			"html": "<iframe src=\"https://rumble.com/embed/v79xd5g/\" title=\"Test\"></iframe>"
+		});
+
+		assert_eq!(
+			rumble_embed_url_from_oembed(&response).as_deref(),
+			Some("https://rumble.com/embed/v79xd5g/")
+		);
 	}
 
 	#[test]
@@ -4050,7 +4470,7 @@ mod tests {
 		assert_eq!(
 			wikipedia_title_from_page(&page).as_deref(),
 			Some(
-				"PostgreSQL is a free and open-source relational database.\nPage created: 2003-11-06T08:19:24Z"
+				"PostgreSQL is a free and open-source relational database.\n\nPage created: 2003-11-06T08:19:24Z"
 			)
 		);
 	}
@@ -4078,6 +4498,38 @@ mod tests {
 		assert!(title.contains("Author: Jane Example"));
 		assert!(title.contains("License: CC BY-SA 4.0"));
 		assert!(title.contains("Dimensions: 640 x 480"));
+	}
+
+	#[test]
+	fn maps_commons_file_pages_to_direct_media_urls() {
+		let page_url = Url::parse("https://commons.wikimedia.org/wiki/File:Example.webm").unwrap();
+		let page = serde_json::json!({
+			"imageinfo": [{
+				"url": "https://upload.wikimedia.org/wikipedia/commons/0/00/Example.webm"
+			}]
+		});
+		let media_url = commons_file_media_url_from_page(&page).unwrap();
+		let html = direct_media_embed_html(&media_url, DirectMediaKind::Video);
+
+		assert_eq!(
+			commons_file_page_title(&page_url).as_deref(),
+			Some("File:Example.webm")
+		);
+		assert_eq!(
+			direct_media_kind_from_filename("File:Example.webm"),
+			Some(DirectMediaKind::Video)
+		);
+		assert_eq!(
+			media_url,
+			"https://upload.wikimedia.org/wikipedia/commons/0/00/Example.webm"
+		);
+		assert!(
+			html.contains(
+				r#"<source src="https://upload.wikimedia.org/wikipedia/commons/0/00/Example.webm">"#
+			),
+			"{html}"
+		);
+		assert!(!html.contains("commons.wikimedia.org/wiki/File:"), "{html}");
 	}
 
 	#[test]
@@ -4325,6 +4777,24 @@ mod tests {
 			Some(
 				"Telegram channel: Telegram News\nSubscribers: 10 169 937\nDescription: The official Telegram on Telegram."
 			)
+		);
+	}
+
+	#[test]
+	fn builds_google_drive_folder_file_list_title() {
+		let folder = Url::parse("https://drive.google.com/drive/folders/abcDEF_123-456").unwrap();
+		let html = r#"<title>Project files - Google Drive</title>
+<div class="flip-entry-title">notes.txt</div>
+<div class="flip-entry-title">image.png</div>
+<button aria-label="More actions"></button>"#;
+
+		assert_eq!(
+			google_drive_folder_id(&folder).as_deref(),
+			Some("abcDEF_123-456")
+		);
+		assert_eq!(
+			google_drive_folder_title_from_html(html).as_deref(),
+			Some("Google Drive folder: Project files\nFiles:\n- notes.txt\n- image.png")
 		);
 	}
 
