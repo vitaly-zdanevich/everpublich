@@ -246,6 +246,7 @@ You can also send your ideas.
 - [yandex-music-likes-to-evernote](https://github.com/vitaly-zdanevich/yandex-music-likes-to-evernote) - syncs Yandex Music likes to Evernote.
 - [geeknote](https://github.com/vitaly-zdanevich/geeknote) - Evernote CLI.
 - [reeknote](https://gitlab.com/vitaly-zdanevich/reeknote) - Rust rewrite of an Evernote CLI.
+- [evernote-pwa](https://github.com/vitaly-zdanevich/evernote-pwa) - installable web app to view and edit the latest notes, offline-capable.
 
 Related project:
 
