@@ -738,6 +738,15 @@ fn rumble_oembed_embed_url(url: &Url) -> Option<String> {
 }
 
 fn rumble_embed_url_from_oembed(response: &Value) -> Option<String> {
+	rumble_embed_url_from_oembed_with_guard(response, ssrf_safe_url)
+}
+
+/// Extract Rumble's iframe URL from oEmbed HTML and validate it with the
+/// caller-supplied outbound safety check.
+fn rumble_embed_url_from_oembed_with_guard<F>(response: &Value, safe_url: F) -> Option<String>
+where
+	F: Fn(&Url) -> bool,
+{
 	let html = response["html"].as_str()?;
 	let url = first_capture(html, r#"(?is)\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')"#)?;
 	let parsed = Url::parse(&decode_html_entities(&url)).ok()?;
@@ -745,7 +754,7 @@ fn rumble_embed_url_from_oembed(response: &Value) -> Option<String> {
 		&& decoded_path_segments(&parsed)
 			.first()
 			.is_some_and(|part| part == "embed")
-		&& ssrf_safe_url(&parsed))
+		&& safe_url(&parsed))
 	.then(|| parsed.to_string())
 }
 
@@ -1180,12 +1189,25 @@ fn mastodon_oembed_embed_url(url: &Url) -> Option<String> {
 }
 
 fn mastodon_embed_url_from_oembed_html(url: &Url, html: &str) -> Option<String> {
+	mastodon_embed_url_from_oembed_html_with_guard(url, html, ssrf_safe_url)
+}
+
+/// Extract Mastodon's iframe URL from oEmbed HTML and validate that it stays
+/// on the original instance before applying the caller's outbound safety check.
+fn mastodon_embed_url_from_oembed_html_with_guard<F>(
+	url: &Url,
+	html: &str,
+	safe_url: F,
+) -> Option<String>
+where
+	F: Fn(&Url) -> bool,
+{
 	let embed_url = first_capture(
 		html,
 		r#"(?is)\bdata-embed-url\s*=\s*(?:"([^"]+)"|'([^']+)')"#,
 	)
 	.map(|value| decode_html_entities(&value).to_string())?;
-	same_host_url(url, &embed_url)
+	same_host_url_with_guard(url, &embed_url, safe_url)
 }
 
 fn mastodon_status_embed_url(url: &Url) -> Option<String> {
@@ -1319,10 +1341,15 @@ fn mastodon_host(url: &Url) -> Option<String> {
 	)
 }
 
-fn same_host_url(original: &Url, candidate: &str) -> Option<String> {
+/// Accept absolute HTTP(S) URLs that remain on the original host and satisfy
+/// the outbound safety check.
+fn same_host_url_with_guard<F>(original: &Url, candidate: &str, safe_url: F) -> Option<String>
+where
+	F: Fn(&Url) -> bool,
+{
 	let parsed = Url::parse(candidate).ok()?;
 	(matches!(parsed.scheme(), "http" | "https")
-		&& ssrf_safe_url(&parsed)
+		&& safe_url(&parsed)
 		&& normalized_host(&parsed) == normalized_host(original))
 	.then(|| parsed.to_string())
 }
@@ -4300,7 +4327,7 @@ mod tests {
 		});
 
 		assert_eq!(
-			rumble_embed_url_from_oembed(&response).as_deref(),
+			rumble_embed_url_from_oembed_with_guard(&response, |_| true).as_deref(),
 			Some("https://rumble.com/embed/v79xd5g/")
 		);
 	}
@@ -4362,17 +4389,19 @@ mod tests {
 			Some("Gargron")
 		);
 		assert_eq!(
-			mastodon_embed_url_from_oembed_html(
+			mastodon_embed_url_from_oembed_html_with_guard(
 				&status,
 				r#"<blockquote data-embed-url="https://mastodon.social/@Gargron/100254678717223630/embed"></blockquote>"#,
+				|_| true,
 			)
 			.as_deref(),
 			Some("https://mastodon.social/@Gargron/100254678717223630/embed")
 		);
 		assert!(
-			mastodon_embed_url_from_oembed_html(
+			mastodon_embed_url_from_oembed_html_with_guard(
 				&status,
 				r#"<blockquote data-embed-url="https://evil.example/@Gargron/1/embed"></blockquote>"#,
+				|_| true,
 			)
 			.is_none()
 		);

@@ -307,7 +307,7 @@ CI publishes GitHub Pages on pushes to `main`. Optional repository variables:
 
 - `EVERPUBLICH_PAGES_API_BASE_URL` - VM API base URL used by the connect/admin browser calls.
 
-CI also generates `coverage/lcov.info` with `cargo-llvm-cov`; `sonar-project.properties` points SonarCloud at that report.
+CI runs an optional Sonar job when `SONAR_TOKEN` is configured; it generates `coverage/lcov.info` with `cargo-llvm-cov`, and `sonar-project.properties` points SonarCloud at that report.
 
 ## Documentation links
 
