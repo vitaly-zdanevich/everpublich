@@ -917,11 +917,11 @@ fn api_resource_to_attachment(
 	let file_name = transformed_file_name(&original_file_name, &hash, transform);
 	let resource_mime = transformed_mime(&mime, transform);
 	let original_resource_file_name = preview_original_file_name(&original_file_name, transform);
-	let text_preview = Some(source_path.as_path())
-		.filter(|_| is_text_like_attachment(&file_name, &mime))
+	let text_preview = is_text_like_attachment(&file_name, &mime)
+		.then_some(source_path.as_path())
 		.and_then(read_text_preview);
-	let archive_tree = Some(source_path.as_path())
-		.filter(|_| is_archive_attachment(&file_name, &mime))
+	let archive_tree = is_archive_attachment(&file_name, &mime)
+		.then_some(source_path.as_path())
 		.and_then(read_archive_tree);
 
 	Ok(Some(CachedAttachment {
@@ -1159,11 +1159,11 @@ fn cached_attachment(
 	let file_name = transformed_file_name(&original_file_name, hash, transform);
 	let resource_mime = transformed_mime(mime, transform);
 	let original_resource_file_name = preview_original_file_name(&original_file_name, transform);
-	let text_preview = Some(source_path.as_path())
-		.filter(|_| is_text_like_attachment(&file_name, mime))
+	let text_preview = is_text_like_attachment(&file_name, mime)
+		.then_some(source_path.as_path())
 		.and_then(read_text_preview);
-	let archive_tree = Some(source_path.as_path())
-		.filter(|_| is_archive_attachment(&file_name, mime))
+	let archive_tree = is_archive_attachment(&file_name, mime)
+		.then_some(source_path.as_path())
 		.and_then(read_archive_tree);
 
 	Ok(Some(CachedAttachment {
