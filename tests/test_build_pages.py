@@ -20,7 +20,7 @@ class BuildPagesTest(unittest.TestCase):
 		css = (OUTPUT / 'app.css').read_text(encoding='utf-8')
 
 		self.assertIn(
-			'<title>Everpublich: Evernote notebook to a static website</title>',
+			'<title>Everpublich: Evernote notebook to a static website - like a CMS from Evernote</title>',
 			index,
 		)
 		self.assertIn(
